@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
   PanResponder,
@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { useClockSyncedPreview } from "@/hooks/useClockSyncedPreview";
+import { useConfirmOnce } from "@/hooks/useConfirmOnce";
 import { font, tracking } from "@/constants/typography";
 import WaveformBars from "@/components/WaveformBars";
 
@@ -75,6 +76,7 @@ export default function TimelineBrowser({
   const colors = useColors();
   const videoRef = useRef<Video>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [videoError, setVideoError] = useState(false);
 
   // Guard against zero-length takes: all ratio math stays finite.
   const safeDuration = Math.max(duration, 1);
@@ -95,10 +97,16 @@ export default function TimelineBrowser({
   const startPosRef = useRef(bracketPos);
   const seekingRef = useRef(false);
   const bracketRatio = Math.min(1, masterDuration / safeDuration);
-  const beatUnitMs = masterDuration / beatsPerLoop;
+  // Clamp beatsPerLoop ≥ 2 to prevent Infinity from division by zero. (G30)
+  const safeBeatsPerLoop = Math.max(2, Math.round(beatsPerLoop));
+  const beatUnitMs = masterDuration / safeBeatsPerLoop;
   const maxBracketMs = Math.max(0, safeDuration - masterDuration);
 
+  // Fully controlled volume — parent changes propagate live. (G29 fix.)
   const [volume, setVolume] = useState(volumeProp ?? 1);
+  useEffect(() => {
+    if (volumeProp !== undefined) setVolume(volumeProp);
+  }, [volumeProp]);
 
   const bracketStartMs = bracketPos * safeDuration;
   const bracketEndMs = bracketStartMs + masterDuration;
@@ -203,8 +211,8 @@ export default function TimelineBrowser({
   safeDurationRef.current = safeDuration;
   const bracketRatioRef = useRef(bracketRatio);
   bracketRatioRef.current = bracketRatio;
-  const beatsRef = useRef(beatsPerLoop);
-  beatsRef.current = beatsPerLoop;
+  const beatsRef = useRef(safeBeatsPerLoop);
+  beatsRef.current = safeBeatsPerLoop;
 
   const pan = useMemo(
     () =>
@@ -287,6 +295,12 @@ export default function TimelineBrowser({
   const bracketW = bracketRatio * WAVEFORM_W;
   const volPct = Math.round(volume * 100);
 
+  // Single-flight guard — prevent double-tap duplicate confirm. (G19)
+  const handleConfirm = useConfirmOnce(() => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    onConfirm(bracketStartMs, volume);
+  });
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Video preview */}
@@ -301,7 +315,16 @@ export default function TimelineBrowser({
           isMuted={false}
           onPlaybackStatusUpdate={handleStatus}
           useNativeControls={false}
+          onError={() => setVideoError(true)}
         />
+        {videoError && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000", alignItems: "center", justifyContent: "center" }]}>
+            <Ionicons name="warning-outline" size={28} color={colors.accent} />
+            <Text style={[{ fontFamily: font.thin, color: colors.accent, marginTop: 8, fontSize: 12 }]}>
+              video failed to load
+            </Text>
+          </View>
+        )}
         {!syncWithClock && (
           <TouchableOpacity
             onPress={togglePlay}
@@ -355,15 +378,15 @@ export default function TimelineBrowser({
             ]}
           >
             {/* Master beat grid inside the bracket */}
-            {beatsPerLoop > 1 && (
+            {safeBeatsPerLoop > 1 && (
               <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-                {Array.from({ length: beatsPerLoop - 1 }).map((_, i) => (
+                {Array.from({ length: safeBeatsPerLoop - 1 }).map((_, i) => (
                   <View
                     key={i}
                     style={[
                       styles.beatLine,
                       {
-                        left: `${((i + 1) / beatsPerLoop) * 100}%`,
+                        left: `${((i + 1) / safeBeatsPerLoop) * 100}%`,
                         backgroundColor: `${colors.onDark}55`,
                       },
                     ]}
@@ -475,7 +498,7 @@ export default function TimelineBrowser({
           </View>
         )}
         <TouchableOpacity
-          onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); onConfirm(bracketStartMs, volume); }}
+          onPress={handleConfirm}
           style={[styles.btnPri, { backgroundColor: colors.primary, opacity: takeInvalid ? 0.35 : 1 }]}
           disabled={takeInvalid}
         >

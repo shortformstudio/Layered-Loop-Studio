@@ -4,7 +4,7 @@
  *   where-you-heard-it) · Android earpiece/speaker · done.
  * All labels lowercase, per house style.
  */
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   Modal,
   PanResponder,
@@ -73,17 +73,30 @@ export default function MonitorSheet({
   const [tested, setTested] = useState(false);
   const volStart = useRef(volume);
 
-  const volPan = PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {
-      volStart.current = volume;
-      Haptics.selectionAsync();
-    },
-    onPanResponderMove: (_, gs) => {
-      onVolumeChange(Math.max(0, Math.min(1, volStart.current + gs.dx / 240)));
-    },
-    onPanResponderRelease: () => Haptics.selectionAsync(),
-  });
+  // Stable PanResponder — created once, refs carry live values. (G24 pattern.)
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const onVolumeChangeRef = useRef(onVolumeChange);
+  onVolumeChangeRef.current = onVolumeChange;
+
+  const volPan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          volStart.current = volumeRef.current;
+          Haptics.selectionAsync();
+        },
+        onPanResponderMove: (_, gs) => {
+          const next = Math.max(0, Math.min(1, volStart.current + gs.dx / 240));
+          onVolumeChangeRef.current(next);
+        },
+        onPanResponderRelease: () => Haptics.selectionAsync(),
+        onPanResponderTerminate: () => Haptics.selectionAsync(),
+      }),
+    []
+  );
 
   const runTest = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -163,7 +176,8 @@ export default function MonitorSheet({
               </Text>
               <TouchableOpacity
                 onPress={runTest}
-                style={[styles.testBtn, { borderColor: colors.primary }]}
+                disabled={isRecording}
+                style={[styles.testBtn, { borderColor: isRecording ? colors.border : colors.primary, opacity: isRecording ? 0.4 : 1 }]}
                 accessibilityRole="button"
                 accessibilityLabel="Play test tone"
               >

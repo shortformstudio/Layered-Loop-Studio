@@ -24,8 +24,16 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   const insets = useSafeAreaInsets();
 
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   const handleRestart = async () => {
+    // After 2 retries, reset the error instead of reloading to break
+    // the reload loop for deterministic errors. (LOW fix.)
+    if (retryCount >= 2) {
+      resetError();
+      return;
+    }
+    setRetryCount((c) => c + 1);
     try {
       await reloadAppAsync();
     } catch (restartError) {

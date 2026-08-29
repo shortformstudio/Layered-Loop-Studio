@@ -10,8 +10,16 @@ import React, {
 import { Platform } from "react-native";
 import { File } from "expo-file-system";
 import { syntheticWaveform, type AudioAnalysis } from "@/utils/audio-analysis";
-import { defaultBracketMs, nudgeBracket } from "@/lib/loopModel";
-import { syncLoopToServer, deleteLoopFromServer } from "@/lib/loopSync";
+import { defaultBracketMs, nudgeBracket, clampBracketStart, clampTrimBounds } from "@/lib/loopModel";
+import {
+  reduceLoopIntent,
+  logMachineEvent,
+  type MachineState,
+  type LoopIntent,
+  type Transport,
+  MAX_LOOPS as MACHINE_MAX_LOOPS,
+} from "@/lib/loopMachine";
+import { syncLoopToServer, deleteLoopFromServer, type SyncState } from "@/lib/loopSync";
 
 export interface Loop {
   id: string;
@@ -30,6 +38,8 @@ export interface Loop {
   fullRecordingDuration: number;
   /** The movable timeframe bracket start position (ms into full recording) */
   bracketStartMs: number;
+  /** Sync state with the API server (G43) */
+  syncState?: "pending" | "synced" | "failed";
 }
 
 export type Phase =
@@ -39,7 +49,8 @@ export type Phase =
   | "trimming"    // first loop — choose trim bounds
   | "browsing"    // subsequent loop — choose bracket within recording
   | "playing"
-  | "finalized";
+  | "finalized"
+  | "recovering"; // loops exist but masterDuration is missing/corrupt (G09)
 
 export interface PendingLoop {
   uri: string;
@@ -117,6 +128,12 @@ interface LoopContextType {
   saveCurrentToSessions: () => void;
   /** Load a saved session into the active project. Returns false when its files are gone. */
   loadSession: (session: SavedSession) => boolean;
+  /** Recover from a corrupt hydration — re-trims layer 0 as master. */
+  enterRecoveryTrim: () => void;
+  /** Last rejected intent reason — rendered as a toast by consumers. */
+  lastRejected: string | null;
+  /** Clear the last rejected reason after displaying it. */
+  clearRejected: () => void;
 }
 
 const LoopContext = createContext<LoopContextType | null>(null);
@@ -128,6 +145,7 @@ const STORAGE_KEY_MONITOR = "looplayer_monitor_on";
 const STORAGE_KEY_BEATS = "looplayer_beats_per_loop";
 const STORAGE_KEY_SESSIONS = "looplayer_saved_sessions";
 const STORAGE_KEY_SESSION_ID = "looplayer_session_id";
+const STORAGE_KEY_PENDING = "looplayer_pending_loop";
 
 /** A saved project snapshot — listed on the entrance under "saved sessions". */
 export interface SavedSession {
@@ -199,6 +217,8 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const [beatsPerLoop, setBeatsPerLoopState] = useState<number>(BEATS_DEFAULT);
   const [pendingBracketMs, setPendingBracketMs] = useState(0);
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>([]);
+  const [lastRejected, setLastRejected] = useState<string | null>(null);
+  const clearRejected = useCallback(() => setLastRejected(null), []);
 
   // Refs mirroring state for callbacks that must stay dependency-light.
   const loopsRef = useRef<Loop[]>([]);
@@ -208,6 +228,8 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const beatsRef = useRef(beatsPerLoop);
   beatsRef.current = beatsPerLoop;
   const sessionIdRef = useRef<string | null>(null);
+  const phaseRef = useRef<Phase>(phase);
+  phaseRef.current = phase;
 
   const lockBeatsPerLoop = useCallback((b: number) => {
     // Locked once the master tempo exists — the beat grid is set in stone.
@@ -224,6 +246,7 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const confirmBracketRef = useRef<(bracketStartMs?: number, volume?: number) => void>(
     () => {}
   );
+  const disarmRecordingRef = useRef<() => void>(() => {});
 
   // ── Shared playback clock ──────────────────────────────────────────────
   // One epoch anchors every layer. Position = (now − epoch) % masterDuration.
@@ -233,6 +256,31 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const clockPausedOffset = useRef<number>(0);
   const clockTickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const clockSubscribers = useRef<Set<(positionMs: number) => void>>(new Set());
+  const transportRef = useRef<Transport>("running");
+  transportRef.current = clockTickTimer.current ? "running" : "paused";
+
+  // ── Machine dispatch — validates intents through the guard table ────
+  const buildMachineState = useCallback((): MachineState => ({
+    phase: phaseRef.current,
+    transport: transportRef.current,
+    loops: loopsRef.current,
+    pendingLoop: pendingLoopRef.current,
+    masterDuration: masterDurationRef.current,
+    editingLoop: null,
+    recordingDuration: 0,
+  }), []);
+
+  const dispatch = useCallback((intent: LoopIntent): boolean => {
+    const prev = buildMachineState();
+    const result = reduceLoopIntent(intent, prev, beatsRef.current, clockTickTimer.current !== null);
+    if (result.rejected) {
+      setLastRejected(result.rejected);
+      logMachineEvent(intent.type, prev.phase, prev.phase, result.rejected);
+      return false;
+    }
+    logMachineEvent(intent.type, prev.phase, result.state.phase);
+    return true;
+  }, [buildMachineState]);
 
   const startClock = useCallback(() => {
     if (clockTickTimer.current) clearInterval(clockTickTimer.current);
@@ -304,8 +352,9 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       AsyncStorage.getItem(STORAGE_KEY_BEATS),
       AsyncStorage.getItem(STORAGE_KEY_SESSIONS),
       AsyncStorage.getItem(STORAGE_KEY_SESSION_ID),
+      AsyncStorage.getItem(STORAGE_KEY_PENDING),
     ])
-      .then(([rawLoops, rawMaster, rawMonitor, rawBeats, rawSessions, rawSessionId]) => {
+      .then(([rawLoops, rawMaster, rawMonitor, rawBeats, rawSessions, rawSessionId, rawPending]) => {
         let hydratedLoops = false;
         let droppedAllLoops = false;
         if (rawLoops) {
@@ -351,6 +400,11 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
             masterDurationRef.current = master;
           }
         }
+        // Cross-validation (G09): loops exist but masterDuration is missing
+        // or corrupt → enter recovering phase instead of a frozen playing.
+        if (hydratedLoops && masterDurationRef.current === null) {
+          setPhase("recovering");
+        }
         if (droppedAllLoops) {
           AsyncStorage.removeItem(STORAGE_KEY_MASTER).catch(() => {});
           AsyncStorage.removeItem(STORAGE_KEY_BEATS).catch(() => {});
@@ -376,6 +430,22 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
         }
         if (rawSessionId) {
           sessionIdRef.current = rawSessionId;
+        }
+        // Restore pending take from last session (G22).
+        if (rawPending && !hydratedLoops) {
+          try {
+            const pending = JSON.parse(rawPending) as PendingLoop;
+            if (pending.uri && pending.duration > 0) {
+              // On web, blob URIs die on reload — don't restore them.
+              if (Platform.OS !== "web" || !pending.uri.startsWith("blob:")) {
+                setPendingLoop(pending);
+                setPendingBracketMs(pending.duration > 0 ? Math.max(0, pending.duration - (masterDurationRef.current ?? 0)) : 0);
+                setPhase(masterDurationRef.current === null ? "trimming" : "browsing");
+              }
+            }
+          } catch {
+            /* corrupt pending — ignore */
+          }
         }
         if (hydratedLoops && masterDurationRef.current) {
           startPlayback(0);
@@ -425,6 +495,26 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(STORAGE_KEY_MASTER, String(dur)).catch(() => {});
   }, []);
 
+  // Persist pendingLoop on every change (G22).
+  useEffect(() => {
+    if (pendingLoop) {
+      AsyncStorage.setItem(STORAGE_KEY_PENDING, JSON.stringify(pendingLoop)).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(STORAGE_KEY_PENDING).catch(() => {});
+    }
+  }, [pendingLoop]);
+
+  // ── Sync state updater (G43) ──────────────────────────────────────────
+  const updateSyncState = useCallback((loopId: string, state: SyncState) => {
+    const updated = loopsRef.current.map((l) =>
+      l.id === loopId ? { ...l, syncState: state } : l
+    );
+    loopsRef.current = updated;
+    setLoops(updated);
+    // Persist silently — don't debounce this, it's a status flag.
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(() => {});
+  }, []);
+
   // ── Saved sessions ──────────────────────────────────────────────────────
   // The active project persists on every change (crash-safe). Stashing
   // snapshots it into the "saved sessions" list whenever the user moves to
@@ -460,6 +550,12 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       if (loopsRef.current.length > 0) {
         saveCurrentToSessions();
       }
+      // Revoke blob URIs from the previous project before replacing. (G14 fix.)
+      for (const l of loopsRef.current) {
+        revokeBlobURI(l.videoUri);
+        revokeBlobURI(l.fullRecordingUri);
+      }
+      if (pendingLoopRef.current) revokeBlobURI(pendingLoopRef.current.uri);
       const live = filterLiveLoops(session.loops);
       if (live.length === 0) return false;
       const normalized = live.map((l, i) => ({ ...l, layerIndex: i }));
@@ -518,7 +614,14 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       startPlayback(clockPausedOffset.current);
     }
     setPhase("armed");
+    // Auto-disarm after 10 seconds of no trigger — prevents orphaned armed
+    // state on back-navigation or distraction. (G01 fix.)
     if (disarmTimeoutRef.current) clearTimeout(disarmTimeoutRef.current);
+    disarmTimeoutRef.current = setTimeout(() => {
+      if (phaseRef.current === "armed") {
+        disarmRecordingRef.current();
+      }
+    }, 10_000);
     return true;
   }, [startPlayback]);
 
@@ -527,11 +630,13 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(disarmTimeoutRef.current);
       disarmTimeoutRef.current = null;
     }
-    setPhase(loops.length > 0 ? "playing" : "idle");
-  }, [loops.length]);
+    // Use ref to avoid stale closure on loops.length. (C3 fix.)
+    setPhase(loopsRef.current.length > 0 ? "playing" : "idle");
+  }, []);
+  disarmRecordingRef.current = disarmRecording;
 
   const startRecording = useCallback(() => {
-    if (loops.length >= MAX_LOOPS) return;
+    if (loopsRef.current.length >= MAX_LOOPS) return;
     if (recordingTimer.current) {
       clearInterval(recordingTimer.current);
       recordingTimer.current = null;
@@ -595,7 +700,9 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const confirmLoop = useCallback(
     (startTrim: number, endTrim: number) => {
       if (!pendingLoop) return;
-      const loopLen = endTrim - startTrim;
+      // Clamp through the model layer — zero/NaN/negative crashes impossible. (G18/G27.)
+      const { start, end } = clampTrimBounds(pendingLoop.duration, startTrim, endTrim);
+      const loopLen = end - start;
       if (!(loopLen > 0) || !Number.isFinite(loopLen)) return;
       if (masterDurationRef.current === null) {
         masterDurationRef.current = loopLen;
@@ -606,8 +713,8 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
         id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
         videoUri: pendingLoop.uri,
         duration: pendingLoop.duration,
-        startTrim,
-        endTrim,
+        startTrim: start,
+        endTrim: end,
         waveformData: pendingLoop.waveformData,
         layerIndex: loops.length,
         volume: 1.0,
@@ -615,36 +722,43 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
         videoOpacity: 0.85,
         fullRecordingUri: pendingLoop.fullRecordingUri ?? pendingLoop.uri,
         fullRecordingDuration: pendingLoop.fullRecordingDuration ?? pendingLoop.duration,
-        bracketStartMs: startTrim,
+        bracketStartMs: start,
       };
       const updated = [...loops, newLoop];
       loopsRef.current = updated;
       setLoops(updated);
       saveLoops(updated);
-      void syncLoopToServer(
+      // Sync to server — update syncState on completion. (G43)
+      const loopId = newLoop.id;
+      syncLoopToServer(
         newLoop,
         masterDurationRef.current ?? 0,
         beatsRef.current,
         pendingLoop.detectedBpm ?? null
-      );
+      ).then((state) => updateSyncState(loopId, state));
       setPendingLoop(null);
       setPhase("playing");
       startPlayback(0);
     },
-    [pendingLoop, loops, saveLoops, saveMasterDuration, startPlayback]
+    [pendingLoop, loops, saveLoops, saveMasterDuration, startPlayback, updateSyncState]
   );
 
   const confirmBracket = useCallback(
     (bracketStartMs?: number, layerVolume = 1) => {
       if (!pendingLoop || masterDurationRef.current === null) return;
-      // Defaults to the current envelope position — provisional commit keeps
-      // whatever the user nudged with the arrows before the next intent.
-      const start = bracketStartMs ?? pendingBracketMs;
-      if (!Number.isFinite(start) || start < 0) return;
+      // Clamp through the model layer — negative-length loops are structurally
+      // impossible. (G27 fix.)
+      const start = clampBracketStart(
+        pendingLoop.duration,
+        masterDurationRef.current,
+        bracketStartMs ?? pendingBracketMs
+      );
       const endTrim = Math.min(
         start + masterDurationRef.current,
         pendingLoop.duration
       );
+      // Guard: endTrim must exceed startTrim or the loop is degenerate.
+      if (endTrim <= start) return;
       const newLoop: Loop = {
         id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
         videoUri: pendingLoop.uri,
@@ -664,12 +778,13 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       loopsRef.current = updated;
       setLoops(updated);
       saveLoops(updated);
-      void syncLoopToServer(
+      const loopId = newLoop.id;
+      syncLoopToServer(
         newLoop,
         masterDurationRef.current ?? 0,
         beatsRef.current,
         pendingLoop.detectedBpm ?? null
-      );
+      ).then((state) => updateSyncState(loopId, state));
       setPendingLoop(null);
       setPendingBracketMs(0);
       setPhase("playing");
@@ -770,10 +885,16 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const confirmEditBracket = useCallback(
     (id: string, bracketStartMs: number) => {
       const md = masterDurationRef.current;
-      if (!md || !Number.isFinite(bracketStartMs) || bracketStartMs < 0) return;
+      if (!md) return;
+      // Clamp through the model layer. (G27 fix.)
+      const start = clampBracketStart(
+        loops.find((l) => l.id === id)?.duration ?? 0,
+        md,
+        bracketStartMs
+      );
       const updated = loops.map((l) =>
         l.id === id
-          ? { ...l, startTrim: bracketStartMs, endTrim: Math.min(bracketStartMs + md, l.duration), bracketStartMs }
+          ? { ...l, startTrim: start, endTrim: Math.min(start + md, l.duration), bracketStartMs: start }
           : l
       );
       setLoops(updated);
@@ -785,6 +906,22 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
 
   const cancelEditLoop = useCallback(() => setEditingLoop(null), []);
 
+  /** Recovery: re-trim layer 0 to re-anchor the master. (G09) */
+  const enterRecoveryTrim = useCallback(() => {
+    const first = loopsRef.current[0];
+    if (!first) return;
+    setPendingLoop({
+      uri: first.videoUri,
+      duration: first.fullRecordingDuration || first.duration,
+      waveformData: first.waveformData,
+      fullRecordingUri: first.fullRecordingUri,
+      fullRecordingDuration: first.fullRecordingDuration,
+      detectedBpm: null,
+    });
+    setPendingBracketMs(0);
+    setPhase("trimming");
+  }, []);
+
   const finalizeProject = useCallback(() => {
     // Provisional commit: saving keeps the pending take at its envelope.
     if (pendingLoopRef.current) {
@@ -794,11 +931,11 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       clearInterval(recordingTimer.current);
       recordingTimer.current = null;
     }
-    saveLoops(loops);
+    saveLoops(loopsRef.current);
     setPhase("finalized");
     startPlayback(0);
     setEditingLoop(null);
-  }, [loops, saveLoops, startPlayback]);
+  }, [saveLoops, startPlayback]);
 
   const clearAll = useCallback(() => {
     if (recordingTimer.current) {
@@ -814,7 +951,11 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       revokeBlobURI(l.fullRecordingUri);
     });
     if (pendingLoop) revokeBlobURI(pendingLoop.uri);
-    flushPersist();
+    // Cancel debounced write, then write empty once. (N2 fix.)
+    if (persistTimer.current) {
+      clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
     setLoops([]);
     setPendingLoop(null);
     setPendingBracketMs(0);
@@ -830,9 +971,10 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
     saveLoops([]);
     sessionIdRef.current = null;
     AsyncStorage.removeItem(STORAGE_KEY_SESSION_ID).catch(() => {});
+    AsyncStorage.removeItem(STORAGE_KEY_PENDING).catch(() => {});
     AsyncStorage.removeItem(STORAGE_KEY_MASTER).catch(() => {});
     AsyncStorage.removeItem(STORAGE_KEY_BEATS).catch(() => {});
-  }, [loops, pendingLoop, saveLoops, flushPersist, stopPlayback]);
+  }, [loops, pendingLoop, saveLoops, stopPlayback]);
 
   useEffect(() => () => { flushPersist(); stopClock(); }, [flushPersist, stopClock]);
 
@@ -878,6 +1020,9 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       savedSessions,
       saveCurrentToSessions,
       loadSession,
+      enterRecoveryTrim,
+      lastRejected,
+      clearRejected,
     }),
     [
       loops,
@@ -919,6 +1064,9 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
       savedSessions,
       saveCurrentToSessions,
       loadSession,
+      enterRecoveryTrim,
+      lastRejected,
+      clearRejected,
     ]
   );
 

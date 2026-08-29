@@ -221,6 +221,13 @@ export default function StackedTimeline({
                     {loop.layerIndex + 1}
                   </Text>
                 </View>
+                {/* Sync status dot (G43) */}
+                {loop.syncState === "failed" && (
+                  <View style={[styles.syncDot, { backgroundColor: colors.accent }]} />
+                )}
+                {loop.syncState === "pending" && (
+                  <View style={[styles.syncDot, { backgroundColor: colors.primary }]} />
+                )}
                 <View style={styles.smRow}>
                   <TouchableOpacity
                     onPress={() => { Haptics.selectionAsync(); onToggleSolo(loop.id); }}
@@ -335,6 +342,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   badgeNum: { fontSize: 11 },
+  syncDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    alignSelf: "center",
+    marginTop: 2,
+  },
   smRow: { flexDirection: "row", gap: 3 },
   smBtn: {
     width: 18,

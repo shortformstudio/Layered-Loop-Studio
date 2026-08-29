@@ -30,14 +30,16 @@ interface ArmRingProps {
  */
 export default function ArmRing({ remainingFrac, beats }: ArmRingProps) {
   const colors = useColors();
-  const frac = useSharedValue(Math.max(0, Math.min(1, remainingFrac)));
+  // Guard against NaN remainingFrac (edge case). (LOW fix.)
+  const safeFrac = Number.isFinite(remainingFrac) ? remainingFrac : 0;
+  const frac = useSharedValue(Math.max(0, Math.min(1, safeFrac)));
 
   useEffect(() => {
-    frac.value = withTiming(Math.max(0, Math.min(1, remainingFrac)), {
+    frac.value = withTiming(Math.max(0, Math.min(1, safeFrac)), {
       duration: 110,
       easing: Easing.linear,
     });
-  }, [remainingFrac, frac]);
+  }, [safeFrac, frac]);
 
   const arcProps = useAnimatedProps(() => ({
     strokeDashoffset: C * (1 - frac.value),
@@ -46,7 +48,9 @@ export default function ArmRing({ remainingFrac, beats }: ArmRingProps) {
     transform: [{ rotate: `${(1 - frac.value) * 360}deg` }],
   }));
 
-  const ticks = Array.from({ length: beats }, (_, i) => (i / beats) * 360);
+  // Guard against unbounded beats count.
+  const safeBeats = Math.max(1, Math.min(32, Math.round(beats) || 4));
+  const ticks = Array.from({ length: safeBeats }, (_, i) => (i / safeBeats) * 360);
 
   return (
     <View style={styles.wrap} pointerEvents="none">

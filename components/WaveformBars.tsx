@@ -26,9 +26,9 @@ export default function WaveformBars({
   beatMarkers,
   markerColor = "rgba(245,240,232,0.22)",
 }: WaveformBarsProps) {
-  const barCount = data.length;
+  const barCount = Math.max(1, data.length);
   const gap = 2;
-  const barWidth = Math.max(1, (width - gap * (barCount - 1)) / barCount);
+  const barWidth = Math.max(1, Math.min(width, (width - gap * (barCount - 1)) / barCount));
 
   return (
     <View style={{ width, height }}>

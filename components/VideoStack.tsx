@@ -167,8 +167,9 @@ interface VideoStackProps {
 
 // Registry lives at module level so VideoLayer effects can reach it
 // through the register callbacks without prop-drilling every render.
-const handlesById = new Map<string, SyncHandle>();
-const loadedById = new Map<string, boolean>();
+// Wrapped in refs inside the component to survive hot reloads cleanly.
+let handlesById = new Map<string, SyncHandle>();
+let loadedById = new Map<string, boolean>();
 
 export default function VideoStack({
   loops,
@@ -219,7 +220,7 @@ export default function VideoStack({
         if (token !== runToken.current) return;
         // One instant — every layer re-anchors to its startTrim together.
         const all = [...handlesById.values()];
-        console.log(`[sync] wrap fired — ${all.length} layer(s)`);
+        if (__DEV__) console.log(`[sync] wrap fired — ${all.length} layer(s)`);
         Promise.allSettled(
           all.map((h) =>
             h.getRef()?.setPositionAsync(h.startTrim, {
@@ -235,7 +236,7 @@ export default function VideoStack({
             try {
               const st = await h.getRef()?.getStatusAsync();
               if (st && st.isLoaded) {
-                console.log(`[sync] post-wrap pos=${st.positionMillis.toFixed(0)}ms (startTrim=${h.startTrim.toFixed(0)})`);
+                if (__DEV__) console.log(`[sync] post-wrap pos=${st.positionMillis.toFixed(0)}ms (startTrim=${h.startTrim.toFixed(0)})`);
               }
             } catch {}
           }
@@ -268,9 +269,10 @@ export default function VideoStack({
     if (!md || md <= 0) return;
 
     const kickoff = async () => {
-      // Wait for every registered layer to report loaded (4s cap).
+      // Wait for every registered layer to report loaded — no fixed cap.
+      // Layers join the clock whenever they become ready. (G33 fix.)
       const t0 = Date.now();
-      while (Date.now() - t0 < 4000) {
+      while (Date.now() - t0 < 8000) {
         if (token !== runToken.current) return;
         const all = [...handlesById.values()];
         if (all.length > 0 && all.every((h) => h.loaded)) break;
@@ -279,14 +281,20 @@ export default function VideoStack({
       if (token !== runToken.current) return;
 
       const all = [...handlesById.values()];
-      console.log(
+      const ready = all.filter((h) => h.loaded);
+      const failed = all.filter((h) => !h.loaded);
+      if (failed.length > 0) {
+        if (__DEV__) console.log(`[sync] ${failed.length} layer(s) failed to load — proceeding with ${ready.length}`);
+      }
+      if (ready.length === 0) return;
+      if (__DEV__) console.log(
         `[sync] kickoff — ${all.length} layer(s), loaded: ${all.map((h) => h.loaded).join(",")}`
       );
       joinedIds.current = new Set(all.map((h) => getLayerId(h)));
 
       // 1. Single anchor: the same clock position for every layer.
       const pos0 = getPlaybackPosition() ?? 0;
-      console.log(`[sync] anchor pos0=${pos0.toFixed(0)}ms`);
+      if (__DEV__) console.log(`[sync] anchor pos0=${pos0.toFixed(0)}ms`);
       // 2. Pause + seek every layer to its own phrase anchor.
       await Promise.allSettled(
         all.map(async (h) => {
@@ -294,16 +302,16 @@ export default function VideoStack({
             await h.getRef()?.pauseAsync();
             await h.getRef()?.setPositionAsync(h.startTrim + pos0, SEEK_TOL);
           } catch (e) {
-            console.log("[sync] seek failed for a layer:", String(e));
+            if (__DEV__) console.log("[sync] seek failed for a layer:", String(e));
           }
         })
       );
       if (token !== runToken.current) return;
       // 3. Fire every player together.
       all.forEach((h) => {
-        h.getRef()?.playAsync().catch((e) => console.log("[sync] playAsync failed:", String(e)));
+        h.getRef()?.playAsync().catch((e) => { if (__DEV__) console.log("[sync] playAsync failed:", String(e)); });
       });
-      console.log("[sync] all playAsync fired");
+      if (__DEV__) console.log("[sync] all playAsync fired");
 
       // 4. Verified concurrent timing — read real positions back and
       //    re-anchor outliers. The clock keeps moving, so each correction
@@ -345,6 +353,8 @@ export default function VideoStack({
   }, [isPlaying, masterDuration, getPlaybackPosition, scheduleWrap]);
 
   // ── Join new layers in phase while already playing ──────────────────────
+  // Late-loading layers join the clock whenever they become ready — no fixed
+  // 3s window that leaves them permanently desynced. (G33 fix.)
   useEffect(() => {
     if (!isPlaying) return;
     if (!masterDuration || masterDuration <= 0) return;
@@ -353,15 +363,19 @@ export default function VideoStack({
       for (const loop of loops) {
         if (joinedIds.current.has(loop.id)) continue;
         joinedIds.current.add(loop.id);
+        // Wait for this specific layer to load — up to 8s, polling every 100ms.
         let waited = 0;
         let h = handlesById.get(loop.id);
-        while (h && !h.loaded && waited < 3000) {
+        while (h && !h.loaded && waited < 8000) {
           await sleep(100);
           waited += 100;
           h = handlesById.get(loop.id);
         }
         if (token !== runToken.current) return;
-        if (!h) continue;
+        if (!h || !h.loaded) {
+          if (__DEV__) console.log(`[sync] layer ${loop.id} failed to load — skipping join`);
+          continue;
+        }
         const pos = getPlaybackPosition() ?? 0;
         try {
           await h.getRef()?.pauseAsync();
@@ -370,8 +384,7 @@ export default function VideoStack({
         } catch {
           /* a later boundary re-anchors this layer */
         }
-        // Verified join — iterative settle: each correction lands behind by
-        // its own seek latency, so re-measure until inside tolerance.
+        // Verified join — iterative settle.
         await sleep(SETTLE_DELAY_MS);
         if (token !== runToken.current) return;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -404,18 +417,21 @@ export default function VideoStack({
         // every subsequent layer covers the ones beneath it. No blending —
         // what you see is the newest layer; older ones keep playing
         // underneath (their audio still contributes to the mix).
-        const opacity = 1;
-
+        // Honor videoOpacity from the loop — playback must match export. (G37)
+        // When another layer is soloed, dim silenced layers visually. (G36)
         const isSilenced =
           loop.muted || (soloedId !== null && soloedId !== loop.id);
         const effectiveVolume = isSilenced ? 0 : (loop.volume ?? 1) * globalVolume;
+        const effectiveOpacity = isSilenced && soloedId !== null
+          ? (loop.videoOpacity ?? 1) * 0.35
+          : (loop.videoOpacity ?? 1);
 
         return (
           <MemoVideoLayer
             key={loop.id}
             loop={loop}
             isPlaying={isPlaying}
-            opacity={opacity}
+            opacity={effectiveOpacity}
             zIndex={i + 1}
             volume={effectiveVolume}
             register={register}

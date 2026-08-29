@@ -57,12 +57,19 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
   clipsRef.current = clips;
   const compositeRef = useRef<CompositeClip | null>(null);
   compositeRef.current = composite;
+  // Stale closure fix (G39): read loops from a ref updated per render.
+  const loopsRef = useRef(loops);
+  loopsRef.current = loops;
 
   // Fresh state each time the sheet opens
   useEffect(() => {
     if (visible) {
       setRunning(false);
       setProgress({ done: 0, total: 0 });
+      // Revoke previous clips' blob URLs before clearing. (G41 fix.)
+      clipsRef.current.forEach((c) => {
+        if (c.uri.startsWith("blob:")) URL.revokeObjectURL(c.uri);
+      });
       setClips([]);
       setErrors({});
       setCompositeRunning(false);
@@ -87,7 +94,8 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
   const ordered = [...loops].sort((a, b) => a.layerIndex - b.layerIndex);
 
   const handleCompositeExport = useCallback(async () => {
-    if (compositeRunning || loops.length === 0) return;
+    const currentLoops = loopsRef.current;
+    if (compositeRunning || currentLoops.length === 0) return;
     if (Platform.OS !== "web") {
       setCompositeError("Composite video is exported by the web build.");
       return;
@@ -101,7 +109,7 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
     setCompositeError(null);
     setComposite(null);
     try {
-      const result = await exportCompositeOnWeb(loops, masterDuration);
+      const result = await exportCompositeOnWeb(currentLoops, masterDuration);
       setComposite(result);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
@@ -110,7 +118,7 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
     } finally {
       setCompositeRunning(false);
     }
-  }, [compositeRunning, loops, masterDuration]);
+  }, [compositeRunning, masterDuration]);
 
   const handleSaveComposite = (clip: CompositeClip) => {
     Haptics.selectionAsync();
@@ -123,13 +131,18 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
   };
 
   const handleExportAll = useCallback(async () => {
-    if (running || loops.length === 0) return;
+    const currentLoops = loopsRef.current;
+    if (running || currentLoops.length === 0) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRunning(true);
     setErrors({});
+    // Revoke previous clips before clearing. (G41 fix.)
+    clipsRef.current.forEach((c) => {
+      if (c.uri.startsWith("blob:")) URL.revokeObjectURL(c.uri);
+    });
     setClips([]);
     try {
-      const result = await exportAllClips(loops, (done, total) =>
+      const result = await exportAllClips(currentLoops, (done, total) =>
         setProgress({ done, total })
       );
       setClips(result);
@@ -142,7 +155,7 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
     } finally {
       setRunning(false);
     }
-  }, [loops, running]);
+  }, [running]);
 
   const handleSaveWeb = (clip: ExportedClip) => {
     Haptics.selectionAsync();
@@ -285,7 +298,18 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
 
           {/* ── Layer list ── */}
           <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
-            {ordered.map((loop) => {
+            {ordered.length === 0 ? (
+              <View style={[styles.emptyState, { backgroundColor: colors.cardAlt, borderColor: colors.border }]}>
+                <Ionicons name="videocam-outline" size={24} color={colors.mutedForeground} />
+                <Text style={[styles.emptyTitle, { fontFamily: font.thin, color: colors.foreground }]}>
+                  no layers yet
+                </Text>
+                <Text style={[styles.emptySub, { fontFamily: font.thin, color: colors.mutedForeground }]}>
+                  record a layer in the studio first, then come back to export
+                </Text>
+              </View>
+            ) : (
+              ordered.map((loop) => {
               const clip = clipByIndex.get(loop.layerIndex);
               const err = errors[loop.layerIndex];
               const startMs = clip?.windowMs[0] ?? loop.startTrim;
@@ -340,7 +364,8 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
                   )}
                 </View>
               );
-            })}
+            })
+            )}
           </ScrollView>
 
           {/* ── Footer ── */}
@@ -463,4 +488,15 @@ const styles = StyleSheet.create({
   },
   exportTxt: { fontSize: 14 },
   nativeNote: { fontSize: 10, textAlign: "center", marginTop: 10 },
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 32,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  emptyTitle: { fontSize: 14 },
+  emptySub: { fontSize: 12, textAlign: "center", lineHeight: 18 },
 });

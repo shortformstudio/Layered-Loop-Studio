@@ -68,7 +68,7 @@ export default function VerticalFader({
     []
   );
 
-  const pct = Math.round(value * 100);
+  const pct = Math.round((Number.isFinite(value) ? value : 0) * 100);
 
   return (
     <View

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Modal,
@@ -16,6 +16,7 @@ import Animated, {
   useReducedMotion,
   useSharedValue,
   withDelay,
+  withRepeat,
   withTiming,
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
@@ -32,10 +33,64 @@ import { font, tracking } from "@/constants/typography";
 type RatioKind = "1:1" | "4:5" | "9:16";
 
 const INTRO_STEPS = [
-  { n: "01", title: "Record", detail: "play till you find the loop", accent: "#a78bfa" },
-  { n: "02", title: "Layer", detail: "select the next loop layer by recording over the composition", accent: "#22d3ee" },
-  { n: "03", title: "Export", detail: "up to 5 layers of video and sound compile and save on your camera roll", accent: "#fb7185" },
+  {
+    n: "01",
+    title: "Record",
+    detail: "play till you find the loop",
+  },
+  {
+    n: "02",
+    title: "Layer",
+    detail: "select the next loop layer by recording over the composition",
+  },
+  {
+    n: "03",
+    title: "Export",
+    detail: "up to 5 layers of video and sound compile and save on your camera roll",
+  },
 ];
+
+function GlowOrb({
+  color,
+  size,
+  animatedStyle,
+}: {
+  color: string;
+  size: number;
+  animatedStyle?: any;
+}) {
+  const rings = [
+    { f: 1.0, o: 0.05 },
+    { f: 0.64, o: 0.09 },
+    { f: 0.36, o: 0.16 },
+  ];
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[{ width: size, height: size }, animatedStyle]}
+    >
+      {rings.map((ring, i) => {
+        const d = size * ring.f;
+        const inset = (size - d) / 2;
+        return (
+          <View
+            key={i}
+            style={{
+              position: "absolute",
+              top: inset,
+              left: inset,
+              width: d,
+              height: d,
+              borderRadius: d / 2,
+              backgroundColor: color,
+              opacity: ring.o,
+            }}
+          />
+        );
+      })}
+    </Animated.View>
+  );
+}
 
 export default function EntranceScreen() {
   const colors = useColors();
@@ -43,8 +98,13 @@ export default function EntranceScreen() {
   const reducedMotion = useReducedMotion();
   const isNative = Platform.OS !== "web";
   const {
-    loops, savedSessions, saveCurrentToSessions, loadSession,
-    clearAll, monitorOn, setMonitorOn,
+    loops,
+    savedSessions,
+    saveCurrentToSessions,
+    loadSession,
+    clearAll,
+    monitorOn,
+    setMonitorOn,
   } = useLoops();
 
   const [selectedRatio] = useState<RatioKind>("9:16");
@@ -53,29 +113,52 @@ export default function EntranceScreen() {
 
   const leaving = useRef(false);
   const contentOpacity = useSharedValue(1);
-  const titleOpacity = useSharedValue(0);
+  const wordmarkOpacity = useSharedValue(0);
   const stepsOpacity = useSharedValue(0);
   const actionsOpacity = useSharedValue(0);
-  const stepsY = useSharedValue(12);
-  const actionsY = useSharedValue(14);
+  const stepsY = useSharedValue(14);
+  const actionsY = useSharedValue(16);
+  const orbGoldX = useSharedValue(0);
+  const orbGoldY = useSharedValue(0);
+  const orbIndigoX = useSharedValue(0);
+  const orbIndigoY = useSharedValue(0);
 
   useEffect(() => {
     if (reducedMotion) {
-      titleOpacity.value = 1;
+      wordmarkOpacity.value = 1;
       stepsOpacity.value = 1;
       actionsOpacity.value = 1;
       stepsY.value = 0;
       actionsY.value = 0;
       return;
     }
-    titleOpacity.value = withTiming(1, { duration: 1200 });
-    stepsOpacity.value = withDelay(600, withTiming(1, { duration: 1000 }));
-    stepsY.value = withDelay(600, withTiming(0, { duration: 1000 }));
-    actionsOpacity.value = withDelay(1400, withTiming(1, { duration: 800 }));
-    actionsY.value = withDelay(1400, withTiming(0, { duration: 800 }));
-  }, [reducedMotion, titleOpacity, stepsOpacity, actionsOpacity, stepsY, actionsY]);
+    // The intro instructions fade in and stay — they leave only when the
+    // user picks an option and the screen fades to the next frame.
+    wordmarkOpacity.value = withTiming(1, { duration: 900 });
+    stepsOpacity.value = withDelay(450, withTiming(1, { duration: 900 }));
+    stepsY.value = withDelay(450, withTiming(0, { duration: 900 }));
+    actionsOpacity.value = withDelay(1100, withTiming(1, { duration: 800 }));
+    actionsY.value = withDelay(1100, withTiming(0, { duration: 800 }));
+  }, [
+    reducedMotion,
+    wordmarkOpacity,
+    stepsOpacity,
+    actionsOpacity,
+    stepsY,
+    actionsY,
+  ]);
 
-  const titleStyle = useAnimatedStyle(() => ({ opacity: titleOpacity.value }));
+  useEffect(() => {
+    if (reducedMotion) return;
+    orbGoldX.value = withRepeat(withTiming(1, { duration: 11000 }), -1, true);
+    orbGoldY.value = withRepeat(withTiming(1, { duration: 15000 }), -1, true);
+    orbIndigoX.value = withRepeat(withTiming(1, { duration: 16000 }), -1, true);
+    orbIndigoY.value = withRepeat(withTiming(1, { duration: 12000 }), -1, true);
+  }, [reducedMotion, orbGoldX, orbGoldY, orbIndigoX, orbIndigoY]);
+
+  const wordmarkStyle = useAnimatedStyle(() => ({
+    opacity: wordmarkOpacity.value,
+  }));
   const stepsStyle = useAnimatedStyle(() => ({
     opacity: stepsOpacity.value,
     transform: [{ translateY: stepsY.value }],
@@ -84,11 +167,28 @@ export default function EntranceScreen() {
     opacity: actionsOpacity.value,
     transform: [{ translateY: actionsY.value }],
   }));
-  const contentStyle = useAnimatedStyle(() => ({ opacity: contentOpacity.value }));
+  const contentStyle = useAnimatedStyle(() => ({
+    opacity: contentOpacity.value,
+  }));
+  const orbGoldStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: orbGoldX.value * 46 - 23 },
+      { translateY: orbGoldY.value * 56 - 28 },
+    ],
+  }));
+  const orbIndigoStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: orbIndigoX.value * 60 - 30 },
+      { translateY: orbIndigoY.value * 48 - 24 },
+    ],
+  }));
 
   const topPad = Platform.OS === "web" ? 40 : insets.top;
   const bottomPad = Platform.OS === "web" ? 24 : insets.bottom + 24;
 
+  // Re-arm the entrance whenever the user returns to it — the leave fade
+  // sets leaving + opacity, and both must reset or the screen becomes an
+  // invisible dead end (new loop / saved do nothing).
   useFocusEffect(
     useCallback(() => {
       leaving.current = false;
@@ -102,7 +202,8 @@ export default function EntranceScreen() {
       router.push({ pathname: "/camera", params: { ratio: selectedRatio } });
       return;
     }
-    contentOpacity.value = withTiming(0, { duration: 320 }, () => {
+    // Fade the whole entrance to the next frame, then hand off to camera.
+    contentOpacity.value = withTiming(0, { duration: 380 }, () => {
       router.push({ pathname: "/camera", params: { ratio: selectedRatio } });
     });
   };
@@ -110,7 +211,10 @@ export default function EntranceScreen() {
   const goToCamera = () => {
     if (leaving.current) return;
     leaving.current = true;
+    if (__DEV__) console.log("[entrance] new loop pressed — navigating to /camera");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // A fresh project never carries the previous one along: stash it into
+    // saved sessions first, then clear and open a blank loop.
     if (loops.length > 0) {
       saveCurrentToSessions();
       clearAll();
@@ -123,7 +227,10 @@ export default function EntranceScreen() {
     setSessionsOpen(false);
     const ok = loadSession(session);
     if (!ok) {
-      Alert.alert("Session Unavailable", "The recordings for this session are no longer on this device.");
+      Alert.alert(
+        "Session Unavailable",
+        "The recordings for this session are no longer on this device."
+      );
       return;
     }
     leaving.current = true;
@@ -141,51 +248,102 @@ export default function EntranceScreen() {
   };
 
   return (
-    <View style={[styles.root, { backgroundColor: "#060d06" }]}>
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
       <StatusBar barStyle="light-content" />
 
-      {/* Settings button — glass circle */}
+      {/* Smooth gradient base */}
+      <LinearGradient
+        colors={["#0A0D14", "#111A2E", "#0A0F1E"]}
+        locations={[0, 0.52, 1]}
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.85, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      {/* Gold sheen falling from the top */}
+      <LinearGradient
+        colors={["rgba(212,168,75,0.13)", "rgba(212,168,75,0)"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+      />
+
+      {/* Drifting glow orbs */}
+      <GlowOrb
+        color="#D4A84B"
+        size={440}
+        animatedStyle={[styles.orbGold, orbGoldStyle]}
+      />
+      <GlowOrb
+        color="#4A538A"
+        size={540}
+        animatedStyle={[styles.orbIndigo, orbIndigoStyle]}
+      />
+      <GlowOrb color="#B85C42" size={300} animatedStyle={styles.orbSienna} />
+
+      {/* Settings cog — top right */}
       <TouchableOpacity
-        onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSettingsOpen(true); }}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setSettingsOpen(true);
+        }}
         style={[styles.settingsBtn, { top: topPad + 18 }]}
         accessibilityRole="button"
         accessibilityLabel="Open settings"
       >
-        <Ionicons name="settings-outline" size={17} color="rgba(255,255,255,0.5)" />
+        <Ionicons name="settings-outline" size={20} color={colors.foreground} />
       </TouchableOpacity>
 
       {/* Settings modal */}
-      <Modal visible={settingsOpen} transparent animationType="fade" onRequestClose={() => setSettingsOpen(false)}>
-        <View style={styles.overlay}>
-          <View style={styles.glassModal}>
-            {isNative && <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />}
-            <LinearGradient
-              colors={["rgba(255,255,255,0.06)", "rgba(255,255,255,0)"]}
-              start={{ x: 0.5, y: 0 }}
-              end={{ x: 0.5, y: 0.4 }}
-              style={StyleSheet.absoluteFill}
-              pointerEvents="none"
-            />
-            <Text style={[styles.modalTitle, { fontFamily: font.thin, color: "rgba(255,255,255,0.92)", letterSpacing: tracking.wide }]}>
+      <Modal
+        visible={settingsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSettingsOpen(false)}
+      >
+        <View style={styles.settingsOverlay}>
+          <View style={styles.settingsCard}>
+            {isNative && (
+              <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
+            )}
+            <Text
+              style={[
+                styles.settingsTitle,
+                { fontFamily: font.thin, color: colors.foreground, letterSpacing: tracking.wide },
+              ]}
+            >
               settings
             </Text>
             <View style={styles.settingsRow}>
-              <Text style={[styles.settingsLabel, { fontFamily: font.thin, color: "rgba(255,255,255,0.5)" }]}>
+              <Text
+                style={[
+                  styles.settingsLabel,
+                  { fontFamily: font.thin, color: colors.mutedForeground, letterSpacing: 2 },
+                ]}
+              >
                 monitor
               </Text>
               <Switch
                 value={monitorOn}
                 onValueChange={setMonitorOn}
-                trackColor={{ false: "rgba(255,255,255,0.06)", true: "#a78bfa" }}
-                thumbColor="rgba(255,255,255,0.92)"
+                trackColor={{ false: colors.muted, true: colors.primary }}
+                thumbColor={colors.foreground}
               />
             </View>
             <TouchableOpacity
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSettingsOpen(false); }}
-              style={[styles.doneBtn, { borderColor: "rgba(255,255,255,0.08)" }]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSettingsOpen(false);
+              }}
+              style={[styles.settingsDone, { borderColor: colors.primary }]}
               accessibilityRole="button"
+              accessibilityLabel="Close settings"
             >
-              <Text style={[styles.doneBtnText, { fontFamily: font.thin, color: "rgba(255,255,255,0.5)", letterSpacing: tracking.wide }]}>
+              <Text
+                style={[
+                  styles.settingsDoneText,
+                  { fontFamily: font.thin, color: colors.primary, letterSpacing: tracking.wide },
+                ]}
+              >
                 done
               </Text>
             </TouchableOpacity>
@@ -194,75 +352,112 @@ export default function EntranceScreen() {
       </Modal>
 
       {/* Saved sessions modal */}
-      <Modal visible={sessionsOpen} transparent animationType="fade" onRequestClose={() => setSessionsOpen(false)}>
-        <View style={styles.overlay}>
-          <View style={styles.glassModal}>
-            {isNative && <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />}
-            <LinearGradient
-              colors={["rgba(255,255,255,0.06)", "rgba(255,255,255,0)"]}
-              start={{ x: 0.5, y: 0 }}
-              end={{ x: 0.5, y: 0.4 }}
-              style={StyleSheet.absoluteFill}
-              pointerEvents="none"
-            />
-            <Text style={[styles.modalTitle, { fontFamily: font.thin, color: "rgba(255,255,255,0.92)", letterSpacing: tracking.wide }]}>
+      <Modal
+        visible={sessionsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSessionsOpen(false)}
+      >
+        <View style={styles.settingsOverlay}>
+          <View style={styles.settingsCard}>
+            {isNative && (
+              <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
+            )}
+            <Text
+              style={[
+                styles.settingsTitle,
+                { fontFamily: font.thin, color: colors.foreground, letterSpacing: tracking.wide },
+              ]}
+            >
               saved sessions
             </Text>
+            {Platform.OS === "web" && (
+              <Text style={[styles.sessionsEmpty, { fontFamily: font.light, color: colors.mutedForeground, marginTop: -4 }]}>
+                sessions don't survive page reload on web — export your project for durable storage
+              </Text>
+            )}
             {loops.length > 0 && (
               <TouchableOpacity
                 onPress={() => {
                   setSessionsOpen(false);
-                  if (!leaving.current) { leaving.current = true; navigateToCamera(); }
+                  if (!leaving.current) {
+                    leaving.current = true;
+                    navigateToCamera();
+                  }
                 }}
-                style={[styles.sessionRow, { borderColor: "rgba(167,139,250,0.3)" }]}
+                style={[styles.sessionRow, { borderColor: colors.primary }]}
                 accessibilityRole="button"
+                accessibilityLabel="Continue current session"
               >
                 <View style={styles.sessionMeta}>
-                  <Text style={[styles.sessionTitle, { fontFamily: font.light, color: "#a78bfa" }]}>
+                  <Text style={[styles.sessionTitle, { fontFamily: font.light, color: colors.primary }]}>
                     current session
                   </Text>
-                  <Text style={[styles.sessionSub, { fontFamily: font.light, color: "rgba(255,255,255,0.5)" }]}>
+                  <Text style={[styles.sessionSub, { fontFamily: font.light, color: colors.mutedForeground }]}>
                     {loops.length} layer{loops.length !== 1 ? "s" : ""} · open now
                   </Text>
                 </View>
-                <Ionicons name="arrow-forward" size={14} color="#a78bfa" />
+                <Ionicons name="arrow-forward" size={16} color={colors.primary} />
               </TouchableOpacity>
             )}
             {savedSessions.length === 0 ? (
-              <Text style={[styles.sessionsEmpty, { fontFamily: font.light, color: "rgba(255,255,255,0.5)" }]}>
-                no saved sessions yet
+              <Text style={[styles.sessionsEmpty, { fontFamily: font.light, color: colors.mutedForeground }]}>
+                no saved sessions yet — start a new loop and it will be kept here automatically
               </Text>
             ) : (
-              <ScrollView style={styles.sessionsScroll} bounces={false}>
+              <ScrollView style={styles.sessionsListScroll} bounces={false}>
                 <View style={styles.sessionsList}>
-                  {savedSessions.map((s) => (
-                    <TouchableOpacity
-                      key={s.id}
-                      onPress={() => openSession(s)}
-                      style={[styles.sessionRow, { borderColor: "rgba(255,255,255,0.06)" }]}
-                      accessibilityRole="button"
-                    >
-                      <View style={styles.sessionMeta}>
-                        <Text style={[styles.sessionTitle, { fontFamily: font.light, color: "rgba(255,255,255,0.92)" }]}>
-                          {s.layerCount} layer{s.layerCount !== 1 ? "s" : ""}
-                          {s.masterDuration > 0 ? ` · ${formatClock(s.masterDuration)}` : ""}
-                        </Text>
-                        <Text style={[styles.sessionSub, { fontFamily: font.light, color: "rgba(255,255,255,0.5)" }]}>
-                          saved {formatWhen(s.savedAt)}
-                        </Text>
-                      </View>
-                      <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.3)" />
-                    </TouchableOpacity>
-                  ))}
+                {savedSessions.map((s) => {
+                  // Session integrity badge — grey out dead sessions. (G16 fix.)
+                  const isDead = Platform.OS !== "web"
+                    ? s.loops.some((l) => {
+                        try {
+                          const f = new (require("expo-file-system").File)(l.videoUri);
+                          return !f.exists;
+                        } catch {
+                          return true;
+                        }
+                      })
+                    : s.loops.some((l) => l.videoUri.startsWith("blob:"));
+                  return (
+                  <TouchableOpacity
+                    key={s.id}
+                    onPress={() => openSession(s)}
+                    style={[styles.sessionRow, { borderColor: isDead ? `${colors.mutedForeground}44` : colors.border, opacity: isDead ? 0.5 : 1 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open session with ${s.layerCount} layers${isDead ? " — files missing" : ""}`}
+                  >
+                    <View style={styles.sessionMeta}>
+                      <Text style={[styles.sessionTitle, { fontFamily: font.light, color: colors.foreground }]}>
+                        {s.layerCount} layer{s.layerCount !== 1 ? "s" : ""}
+                        {s.masterDuration > 0 ? ` · ${formatClock(s.masterDuration)}` : ""}
+                      </Text>
+                      <Text style={[styles.sessionSub, { fontFamily: font.light, color: isDead ? colors.accent : colors.mutedForeground }]}>
+                        {isDead ? "files missing · " : ""}saved {formatWhen(s.savedAt)}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
+                  </TouchableOpacity>
+                  );
+                })}
                 </View>
               </ScrollView>
             )}
             <TouchableOpacity
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSessionsOpen(false); }}
-              style={[styles.doneBtn, { borderColor: "rgba(255,255,255,0.06)" }]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSessionsOpen(false);
+              }}
+              style={[styles.settingsDone, { borderColor: colors.border }]}
               accessibilityRole="button"
+              accessibilityLabel="Close saved sessions"
             >
-              <Text style={[styles.doneBtnText, { fontFamily: font.thin, color: "rgba(255,255,255,0.5)", letterSpacing: tracking.wide }]}>
+              <Text
+                style={[
+                  styles.settingsDoneText,
+                  { fontFamily: font.thin, color: colors.mutedForeground, letterSpacing: tracking.wide },
+                ]}
+              >
                 done
               </Text>
             </TouchableOpacity>
@@ -270,50 +465,107 @@ export default function EntranceScreen() {
         </View>
       </Modal>
 
-      <Animated.View style={[styles.content, { paddingTop: topPad + 48, paddingBottom: bottomPad }, contentStyle]}>
-        {/* Title — glassmorphic brand */}
-        <Animated.View style={[styles.titleBlock, titleStyle]}>
-          <View style={styles.brandIcon}>
-            <Text style={{ fontSize: 18, color: "#a78bfa" }}>◈</Text>
-          </View>
-          <Text style={[styles.title, { fontFamily: font.thin, color: "rgba(255,255,255,0.92)", letterSpacing: 10 }]}>
-            AESTHETIC
+      <Animated.View
+        style={[
+          styles.content,
+          { paddingTop: topPad + 32, paddingBottom: bottomPad },
+          contentStyle,
+        ]}
+      >
+        {/* Wordmark */}
+        <Animated.View style={[styles.wordmarkBlock, wordmarkStyle]}>
+          <Text
+            style={[
+              styles.wordmark,
+              {
+                fontFamily: font.thin,
+                color: colors.foreground,
+                letterSpacing: 8,
+              },
+            ]}
+          >
+            LOOPLAYER
           </Text>
-          <Text style={[styles.subtitle, { fontFamily: font.thin, color: "rgba(255,255,255,0.5)" }]}>
-            loop · layer · compose
-          </Text>
+          <LinearGradient
+            colors={[
+              "rgba(212,168,75,0)",
+              "rgba(212,168,75,0.9)",
+              "rgba(212,168,75,0)",
+            ]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.wordmarkRule}
+          />
         </Animated.View>
 
         <View style={styles.spacer} />
 
-        {/* Steps — glass bento cells */}
-        <Animated.View style={[styles.stepsCard, stepsStyle]}>
-          {isNative && <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} />}
+        {/* Intro instructions — static column, fades in and stays until a choice is made */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.glassCard,
+            {
+              backgroundColor: isNative
+                ? "rgba(18,24,36,0.30)"
+                : "rgba(18,24,36,0.55)",
+            },
+            stepsStyle,
+          ]}
+        >
+          {isNative && (
+            <BlurView intensity={48} tint="dark" style={StyleSheet.absoluteFill} />
+          )}
           <LinearGradient
-            colors={["rgba(255,255,255,0.06)", "rgba(255,255,255,0)"]}
+            colors={["rgba(245,240,232,0.12)", "rgba(245,240,232,0)"]}
             start={{ x: 0.5, y: 0 }}
             end={{ x: 0.5, y: 0.5 }}
-            style={StyleSheet.absoluteFill}
             pointerEvents="none"
+            style={styles.cardSheen}
           />
-          <Text style={[styles.eyebrow, { color: "rgba(255,255,255,0.5)", fontFamily: font.thin }]}>
-            HOW IT WORKS
+          <Text
+            style={[
+              styles.eyebrow,
+              { color: colors.mutedForeground, fontFamily: font.light },
+            ]}
+          >
+            GETTING STARTED
           </Text>
           <View style={styles.stepsColumn}>
             {INTRO_STEPS.map((step, i) => (
               <View key={step.n}>
-                {i > 0 && <View style={[styles.stepDivider, { backgroundColor: "rgba(255,255,255,0.06)" }]} />}
+                {i > 0 && <View style={styles.stepDivider} />}
                 <View style={styles.stepRow}>
-                  <View style={[styles.stepNumBadge, { backgroundColor: `${step.accent}15` }]}>
-                    <Text style={[styles.stepNum, { color: step.accent, fontFamily: font.mono }]}>
-                      {step.n}
-                    </Text>
-                  </View>
+                  <Text
+                    style={[
+                      styles.stepNum,
+                      { color: colors.primary, fontFamily: font.mono },
+                    ]}
+                  >
+                    {step.n}
+                  </Text>
                   <View style={styles.stepBody}>
-                    <Text style={[styles.stepTitle, { color: "rgba(255,255,255,0.92)", fontFamily: font.light, letterSpacing: tracking.wide }]}>
+                    <Text
+                      style={[
+                        styles.stepTitle,
+                        {
+                          color: colors.foreground,
+                          fontFamily: font.light,
+                          letterSpacing: tracking.wide,
+                        },
+                      ]}
+                    >
                       {step.title}
                     </Text>
-                    <Text style={[styles.stepDetail, { color: "rgba(255,255,255,0.5)", fontFamily: font.light }]}>
+                    <Text
+                      style={[
+                        styles.stepDetail,
+                        {
+                          color: colors.mutedForeground,
+                          fontFamily: font.light,
+                        },
+                      ]}
+                    >
                       {step.detail}
                     </Text>
                   </View>
@@ -325,37 +577,64 @@ export default function EntranceScreen() {
 
         <View style={styles.spacer} />
 
-        {/* Actions — glass buttons */}
+        {/* Button column — both options stay visible beneath the steps */}
         <Animated.View style={[styles.buttonColumn, actionsStyle]}>
           <TouchableOpacity
             onPress={goToCamera}
-            style={styles.primaryBtn}
-            activeOpacity={0.88}
+            style={styles.mainBtn}
+            activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Create a new loop"
           >
             <LinearGradient
-              colors={["#a78bfa", "#8b5cf6"]}
+              colors={["#E6C166", "#C99B3E"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFill}
             />
-            <Ionicons name="add-circle-outline" size={20} color="#060d06" />
-            <Text style={[styles.primaryBtnText, { fontFamily: font.demi, color: "#060d06", letterSpacing: tracking.wide }]}>
+            <Ionicons
+              name="add-circle-outline"
+              size={22}
+              color={colors.primaryForeground}
+            />
+            <Text
+              style={[
+                styles.mainBtnText,
+                {
+                  fontFamily: font.thin,
+                  color: colors.primaryForeground,
+                  letterSpacing: tracking.wide,
+                },
+              ]}
+            >
               new loop
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSessionsOpen(true); }}
-            style={styles.secondaryBtn}
-            activeOpacity={0.88}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setSessionsOpen(true);
+            }}
+            style={styles.secBtn}
+            activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Open saved sessions"
           >
-            {isNative && <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} />}
-            <Ionicons name="albums-outline" size={16} color="rgba(255,255,255,0.5)" />
-            <Text style={[styles.secondaryBtnText, { fontFamily: font.thin, color: "rgba(255,255,255,0.5)" }]}>
+            {isNative && (
+              <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
+            )}
+            <Ionicons
+              name="albums-outline"
+              size={18}
+              color={colors.mutedForeground}
+            />
+            <Text
+              style={[
+                styles.secBtnText,
+                { fontFamily: font.thin, color: colors.mutedForeground },
+              ]}
+            >
               saved
             </Text>
           </TouchableOpacity>
@@ -366,97 +645,226 @@ export default function EntranceScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: {
+    flex: 1,
+    overflow: "hidden",
+  },
   settingsBtn: {
-    position: "absolute", right: 24,
-    width: 40, height: 40, borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.035)",
-    alignItems: "center", justifyContent: "center", zIndex: 30,
-    shadowColor: "#000", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 32,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
+    position: "absolute",
+    right: 24,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: "rgba(245,240,232,0.14)",
+    backgroundColor: "rgba(245,240,232,0.05)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 30,
   },
-  overlay: {
-    flex: 1, alignItems: "center", justifyContent: "center",
-    backgroundColor: "rgba(6,13,6,0.82)", padding: 32,
+  settingsOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(10,13,20,0.55)",
+    padding: 32,
   },
-  glassModal: {
-    width: "100%", borderRadius: 20,
-    overflow: "hidden", padding: 24, gap: 20,
-    backgroundColor: "rgba(255,255,255,0.035)",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 32,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
+  settingsCard: {
+    width: "100%",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(245,240,232,0.14)",
+    backgroundColor: "rgba(18,24,36,0.85)",
+    overflow: "hidden",
+    padding: 22,
+    gap: 18,
   },
-  modalTitle: { fontSize: 14, textAlign: "center" },
+  settingsTitle: {
+    fontSize: 15,
+    textAlign: "center",
+  },
   settingsRow: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-  settingsLabel: { fontSize: 13, letterSpacing: 1.5, textTransform: "lowercase" },
-  doneBtn: {
-    borderWidth: StyleSheet.hairlineWidth, borderRadius: 14, paddingVertical: 12, alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.035)",
+  settingsLabel: {
+    fontSize: 13,
+    textTransform: "lowercase",
   },
-  doneBtnText: { fontSize: 13 },
-  sessionsList: { gap: 8 },
-  sessionsScroll: { maxHeight: 320 },
+  settingsDone: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  settingsDoneText: {
+    fontSize: 13,
+  },
+  sessionsList: {
+    gap: 8,
+  },
+  sessionsListScroll: {
+    maxHeight: 320,
+  },
   sessionRow: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    borderWidth: StyleSheet.hairlineWidth, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.025)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "rgba(245,240,232,0.04)",
   },
-  sessionMeta: { flex: 1, gap: 2, paddingRight: 10 },
-  sessionTitle: { fontSize: 14, letterSpacing: 0.8 },
-  sessionSub: { fontSize: 12 },
-  sessionsEmpty: { fontSize: 13, lineHeight: 19, textAlign: "center", paddingVertical: 18 },
-  content: { flex: 1, alignItems: "center", paddingHorizontal: 32 },
-  titleBlock: { alignItems: "center", gap: 10 },
-  brandIcon: {
-    width: 44, height: 44, borderRadius: 16,
-    backgroundColor: "rgba(167,139,250,0.12)",
-    alignItems: "center", justifyContent: "center",
-    shadowColor: "#a78bfa", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.25, shadowRadius: 32,
+  sessionMeta: {
+    flex: 1,
+    gap: 2,
+    paddingRight: 10,
   },
-  title: { fontSize: 16 },
-  subtitle: { fontSize: 12, letterSpacing: 1.5 },
-  spacer: { flex: 1 },
-  stepsCard: {
-    width: "100%", borderRadius: 20,
-    paddingVertical: 24, paddingHorizontal: 24,
-    backgroundColor: "rgba(255,255,255,0.035)",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 32,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
+  sessionTitle: {
+    fontSize: 14,
+    letterSpacing: 1,
+  },
+  sessionSub: {
+    fontSize: 12,
+  },
+  sessionsEmpty: {
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+    paddingVertical: 18,
+    paddingHorizontal: 10,
+  },
+  content: {
+    flex: 1,
+    alignItems: "center",
+    paddingHorizontal: 32,
+  },
+
+  wordmarkBlock: {
+    alignItems: "center",
+  },
+  wordmark: {
+    fontSize: 16,
+    letterSpacing: 8,
+  },
+  wordmarkRule: {
+    width: 92,
+    height: 1.5,
+    borderRadius: 1,
+    marginTop: 14,
+  },
+
+  spacer: {
+    flex: 1,
+  },
+
+  glassCard: {
+    width: "100%",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(245,240,232,0.12)",
+    overflow: "hidden",
+    paddingVertical: 22,
+    paddingHorizontal: 24,
+  },
+  cardSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 56,
+  },
+  eyebrow: {
+    fontSize: 10,
+    letterSpacing: 3,
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  stepsColumn: {
+    gap: 0,
+  },
+  stepRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 16,
+    paddingVertical: 12,
+  },
+  stepNum: {
+    fontSize: 13,
+    letterSpacing: 2,
+    width: 30,
+    paddingTop: 3,
+    opacity: 0.9,
+  },
+  stepBody: {
+    flex: 1,
+  },
+  stepTitle: {
+    fontSize: 16,
+    letterSpacing: 3,
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  stepDetail: {
+    fontSize: 12,
+    lineHeight: 17,
+    letterSpacing: 0.3,
+  },
+  stepDivider: {
+    height: 1,
+    backgroundColor: "rgba(245,240,232,0.08)",
+    marginLeft: 46,
+  },
+
+  orbGold: {
+    position: "absolute",
+    top: -140,
+    right: -120,
+  },
+  orbIndigo: {
+    position: "absolute",
+    bottom: -190,
+    left: -170,
+  },
+  orbSienna: {
+    position: "absolute",
+    top: "36%",
+    left: -110,
+  },
+
+  buttonColumn: {
+    width: "100%",
+    gap: 12,
+  },
+  mainBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingVertical: 18,
+    borderRadius: 18,
     overflow: "hidden",
   },
-  eyebrow: { fontSize: 9, letterSpacing: 3, textAlign: "center", marginBottom: 14 },
-  stepsColumn: {},
-  stepRow: { flexDirection: "row", alignItems: "flex-start", gap: 14, paddingVertical: 14 },
-  stepNumBadge: {
-    width: 30, height: 30, borderRadius: 10,
-    alignItems: "center", justifyContent: "center",
+  mainBtnText: {
+    fontSize: 16,
+    letterSpacing: 3,
   },
-  stepNum: { fontSize: 11, letterSpacing: 1 },
-  stepBody: { flex: 1 },
-  stepTitle: { fontSize: 15, letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 4 },
-  stepDetail: { fontSize: 12, lineHeight: 17, letterSpacing: 0.3 },
-  stepDivider: { height: StyleSheet.hairlineWidth, marginLeft: 44 },
-  buttonColumn: { width: "100%", gap: 12 },
-  primaryBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 10, paddingVertical: 18, borderRadius: 16,
+  secBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(245,240,232,0.14)",
+    backgroundColor: "rgba(245,240,232,0.05)",
     overflow: "hidden",
-    shadowColor: "#a78bfa", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 24,
   },
-  primaryBtnText: { fontSize: 15, letterSpacing: 2.5 },
-  secondaryBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 8, paddingVertical: 14, borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.035)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
-    overflow: "hidden",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 16,
+  secBtnText: {
+    fontSize: 14,
+    letterSpacing: 2,
   },
-  secondaryBtnText: { fontSize: 14, letterSpacing: 1.5 },
 });

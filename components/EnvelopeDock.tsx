@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   PanResponder,
   StyleSheet,
@@ -14,6 +14,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useLoops } from "@/context/LoopContext";
 import { useColors } from "@/hooks/useColors";
 import { useClockSyncedPreview } from "@/hooks/useClockSyncedPreview";
+import { useConfirmOnce } from "@/hooks/useConfirmOnce";
 import { nudgeBracket } from "@/lib/loopModel";
 import { font, tracking } from "@/constants/typography";
 import WaveformBars from "@/components/WaveformBars";
@@ -68,7 +69,7 @@ export default function EnvelopeDock({
 
   const duration = Math.max(pendingLoop.duration, 1);
   const bracketRatio = Math.min(1, masterDuration / duration);
-  const beatUnitMs = masterDuration / beatsPerLoop;
+  const beatUnitMs = masterDuration / Math.max(1, beatsPerLoop);
   const maxBracketMs = Math.max(0, duration - masterDuration);
   const beatIndex = Math.round(pendingBracketMs / beatUnitMs);
   const maxSections = Math.max(1, Math.floor(maxBracketMs / beatUnitMs) + 1);
@@ -79,29 +80,65 @@ export default function EnvelopeDock({
   const bracketPx = (pendingBracketMs / duration) * waveWidth;
   const bracketW = bracketRatio * waveWidth;
 
+  // ── Stable PanResponder (G24/G25/G26) ─────────────────────────────────
+  // Created once with useMemo. Everything flows through refs so bracket
+  // updates mid-drag never recreate the responder (recreation = dropped
+  // gestures). Values clamped during move; snap on release + terminate.
+  const pendingBracketMsRef = useRef(pendingBracketMs);
+  pendingBracketMsRef.current = pendingBracketMs;
+  const setPendingBracketRef = useRef(setPendingBracket);
+  setPendingBracketRef.current = setPendingBracket;
+  const jumpToRef = useRef(jumpTo);
+  jumpToRef.current = jumpTo;
+  const waveWidthRef = useRef(waveWidth);
+  waveWidthRef.current = waveWidth;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+  const maxBracketMsRef = useRef(maxBracketMs);
+  maxBracketMsRef.current = maxBracketMs;
+  const beatUnitMsRef = useRef(beatUnitMs);
+  beatUnitMsRef.current = beatUnitMs;
+
   const dragStart = useRef(0);
   const dragMsRef = useRef(0);
-  const pan = PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {
-      dragStart.current = pendingBracketMs;
-      dragMsRef.current = pendingBracketMs;
-      Haptics.selectionAsync();
-    },
-    onPanResponderMove: (_, gs) => {
-      const next = dragStart.current + (gs.dx / Math.max(1, waveWidth)) * duration;
-      dragMsRef.current = next;
-      setPendingBracket(next);
-      jumpTo(next);
-    },
-    onPanResponderRelease: () => {
-      const k = Math.round(dragMsRef.current / beatUnitMs);
-      const snapped = Math.max(0, Math.min(maxBracketMs, k * beatUnitMs));
-      setPendingBracket(snapped);
-      jumpTo(snapped);
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    },
-  });
+
+  const snapToBeat = useCallback((rawMs: number) => {
+    const k = Math.round(rawMs / beatUnitMsRef.current);
+    return Math.max(0, Math.min(maxBracketMsRef.current, k * beatUnitMsRef.current));
+  }, []);
+
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          dragStart.current = pendingBracketMsRef.current;
+          dragMsRef.current = pendingBracketMsRef.current;
+          Haptics.selectionAsync();
+        },
+        onPanResponderMove: (_, gs) => {
+          const raw = dragStart.current + (gs.dx / Math.max(1, waveWidthRef.current)) * durationRef.current;
+          const clamped = Math.max(0, Math.min(maxBracketMsRef.current, raw));
+          dragMsRef.current = clamped;
+          setPendingBracketRef.current(clamped);
+          jumpToRef.current(clamped);
+        },
+        onPanResponderRelease: () => {
+          const snapped = snapToBeat(dragMsRef.current);
+          setPendingBracketRef.current(snapped);
+          jumpToRef.current(snapped);
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        },
+        onPanResponderTerminate: () => {
+          // Interrupted drag — snap to nearest beat so the bracket isn't left raw.
+          const snapped = snapToBeat(dragMsRef.current);
+          setPendingBracketRef.current(snapped);
+          jumpToRef.current(snapped);
+        },
+      }),
+    [snapToBeat]
+  );
 
   const step = (dir: -1 | 1) => {
     const next = nudgeBracket(pendingBracketMs, dir, {
@@ -112,6 +149,20 @@ export default function EnvelopeDock({
     nudgePendingBracket(dir);
     jumpTo(next);
   };
+
+  // Single-flight guards — prevent double-tap duplicate commits. (G19)
+  const handleDiscard = useConfirmOnce(() => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    discardPending();
+  });
+  const handleKeep = useConfirmOnce(() => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (onKeep) {
+      onKeep();
+    } else {
+      confirmBracket();
+    }
+  });
 
   const swipeDown = Gesture.Pan()
     .activeOffsetY(18)
@@ -214,10 +265,7 @@ export default function EnvelopeDock({
 
           <View style={styles.centerRow}>
             <TouchableOpacity
-              onPress={() => {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                discardPending();
-              }}
+              onPress={handleDiscard}
               style={[styles.miniBtn, { borderColor: colors.accent }]}
               accessibilityRole="button"
               accessibilityLabel="Discard take"
@@ -225,14 +273,7 @@ export default function EnvelopeDock({
               <Ionicons name="close" size={18} color={colors.accent} />
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                if (onKeep) {
-                  onKeep();
-                } else {
-                  confirmBracket();
-                }
-              }}
+              onPress={handleKeep}
               style={[styles.miniBtn, { backgroundColor: colors.primary }]}
               accessibilityRole="button"
               accessibilityLabel="Keep take"

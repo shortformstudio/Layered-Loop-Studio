@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PanResponder,
   ScrollView,
@@ -17,7 +17,9 @@ import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
+import { useConfirmOnce } from "@/hooks/useConfirmOnce";
 import { font, tracking } from "@/constants/typography";
+import { safeDuration, clampTrimBounds } from "@/lib/loopModel";
 import WaveformBars from "@/components/WaveformBars";
 
 const PAD = 24;
@@ -66,6 +68,7 @@ export default function TrimEditor({
   const [isPlaying, setIsPlaying] = useState(true);
   const [startRatio, setStartRatio] = useState(0);
   const [endRatio, setEndRatio] = useState(1);
+  const [videoError, setVideoError] = useState(false);
   const startRef = useRef(0);
   const endRef = useRef(1);
   const seekingRef = useRef(false);
@@ -83,9 +86,15 @@ export default function TrimEditor({
   // capture stale closures mid-gesture. Snapping follows the detected tempo
   // silently — BPM is a read-only parameter.
   const beatMsRef = useRef<number | null>(detectedBpm ? 60000 / detectedBpm : null);
+  // Update when async BPM analysis resolves post-mount. (G20 fix.)
+  useEffect(() => {
+    beatMsRef.current = detectedBpm ? 60000 / detectedBpm : null;
+  }, [detectedBpm]);
 
-  const startMs = startRatio * duration;
-  const endMs = endRatio * duration;
+  // Guard against zero/NaN duration — prevents NaN px layout and redbox. (G18)
+  const safeDur = safeDuration(duration);
+  const startMs = startRatio * safeDur;
+  const endMs = endRatio * safeDur;
   const loopLen = endMs - startMs;
   const beatMs = beatMsRef.current;
   const selectionBeats = beatMs ? loopLen / beatMs : null;
@@ -94,24 +103,24 @@ export default function TrimEditor({
   const beatMarkers = useMemo(() => {
     if (!beatMs) return [];
     const markers: number[] = [];
-    const count = Math.floor(duration / beatMs);
+    const count = Math.floor(safeDur / beatMs);
     for (let k = 1; k <= count; k++) {
-      const r = (k * beatMs) / duration;
+      const r = (k * beatMs) / safeDur;
       if (r < 1) markers.push(r);
     }
     return markers;
-  }, [beatMs, duration]);
+  }, [beatMs, safeDur]);
 
   const handleStatus = useCallback(async (status: AVPlaybackStatus) => {
     if (!status.isLoaded) return;
     playheadX.value = withTiming(
-      (status.positionMillis / Math.max(1, duration)) * waveW,
+      (status.positionMillis / Math.max(1, safeDur)) * waveW,
       { duration: 120 }
     );
     if (seekingRef.current) return;
     if (Date.now() - seekCooldownRef.current < 300) return;
-    const startEdge = startRef.current * duration;
-    const endEdge = endRef.current * duration;
+    const startEdge = startRef.current * safeDur;
+    const endEdge = endRef.current * safeDur;
     // Wrap at the end; recover only when well outside the loop bounds
     // (threshold wider than the seek tolerance so a slightly-short wrap
     // landing can't re-trigger recovery in a loop).
@@ -122,7 +131,7 @@ export default function TrimEditor({
           toleranceMillisBefore: 120,
           toleranceMillisAfter: 120,
         });
-        playheadX.value = (startEdge / Math.max(1, duration)) * waveW;
+        playheadX.value = (startEdge / Math.max(1, safeDur)) * waveW;
         if (!status.isPlaying) {
           await videoRef.current?.playAsync();
         }
@@ -133,7 +142,7 @@ export default function TrimEditor({
         seekingRef.current = false;
       }
     }
-  }, [duration, waveW]);
+  }, [safeDur, waveW]);
 
   const playheadStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: playheadX.value }],
@@ -142,7 +151,7 @@ export default function TrimEditor({
   const togglePlay = async () => {
     if (!isPlaying) {
       try {
-        await videoRef.current?.setPositionAsync(startRatio * duration);
+        await videoRef.current?.setPositionAsync(startRatio * safeDur);
         await videoRef.current?.playAsync();
         setIsPlaying(true);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -185,12 +194,12 @@ export default function TrimEditor({
         Haptics.selectionAsync();
       },
       onPanResponderMove: (_, gs) => {
-        const rawMs = (grantR + gs.dx / waveW) * duration;
+        const rawMs = (grantR + gs.dx / waveW) * safeDur;
         const { value, snapped } = snapMs(rawMs);
         if (snapped && !startSnapTick.current) Haptics.selectionAsync();
         startSnapTick.current = snapped;
-        const maxR = Math.max(0, (endRef.current * duration - MIN_LOOP_MS) / duration);
-        const next = Math.min(maxR, Math.max(0, value / duration));
+        const maxR = Math.max(0, (endRef.current * safeDur - MIN_LOOP_MS) / safeDur);
+        const next = Math.min(maxR, Math.max(0, value / safeDur));
         startRef.current = next;
         setStartRatio(next);
       },
@@ -199,7 +208,7 @@ export default function TrimEditor({
         Haptics.selectionAsync();
       },
     });
-  }, [duration, snapMs, waveW]);
+  }, [safeDur, snapMs, waveW]);
 
   const endPan = useMemo(() => {
     let grantR = 1;
@@ -211,12 +220,12 @@ export default function TrimEditor({
         Haptics.selectionAsync();
       },
       onPanResponderMove: (_, gs) => {
-        const rawMs = (grantR + gs.dx / waveW) * duration;
+        const rawMs = (grantR + gs.dx / waveW) * safeDur;
         const { value, snapped } = snapMs(rawMs);
         if (snapped && !endSnapTick.current) Haptics.selectionAsync();
         endSnapTick.current = snapped;
-        const minR = Math.min(1, (startRef.current * duration + MIN_LOOP_MS) / duration);
-        const next = Math.min(1, Math.max(minR, value / duration));
+        const minR = Math.min(1, (startRef.current * safeDur + MIN_LOOP_MS) / safeDur);
+        const next = Math.min(1, Math.max(minR, value / safeDur));
         endRef.current = next;
         setEndRatio(next);
       },
@@ -225,7 +234,7 @@ export default function TrimEditor({
         Haptics.selectionAsync();
       },
     });
-  }, [duration, snapMs, waveW]);
+  }, [safeDur, snapMs, waveW]);
 
   // Keep handles from overlapping on very short loops
   const startPx = startRatio * waveW;
@@ -233,14 +242,16 @@ export default function TrimEditor({
   const startLeft = Math.min(startPx - HANDLE_W / 2, endPx - HANDLE_W);
   const endLeft = Math.max(endPx - HANDLE_W / 2, startPx);
 
-  const handleConfirm = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  const handleConfirm = useConfirmOnce(() => {
+    // Clamp through the model layer — zero/NaN/negative impossible. (G18/G27.)
+    const { start, end } = clampTrimBounds(safeDur, startMs, endMs);
     const gridBeats =
       beatMs && selectionBeats !== null && selectionBeats > 0
         ? nearestBeatOption(Math.round(selectionBeats))
         : null;
-    onConfirm(startMs, endMs, gridBeats);
-  };
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    onConfirm(start, end, gridBeats);
+  });
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -257,7 +268,16 @@ export default function TrimEditor({
           onPlaybackStatusUpdate={handleStatus}
           useNativeControls={false}
           progressUpdateIntervalMillis={100}
+          onError={() => setVideoError(true)}
         />
+        {videoError && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000", alignItems: "center", justifyContent: "center" }]}>
+            <Ionicons name="warning-outline" size={28} color={colors.accent} />
+            <Text style={[{ fontFamily: font.thin, color: colors.accent, marginTop: 8, fontSize: 12 }]}>
+              video failed to load
+            </Text>
+          </View>
+        )}
         <TouchableOpacity
           onPress={togglePlay}
           style={[styles.playBtn, { backgroundColor: colors.overlay }]}
