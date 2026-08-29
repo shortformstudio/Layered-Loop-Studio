@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Aesthetic",
+    "slug": "aesthetic",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "aesthetic",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#060d06"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Aesthetic needs camera access to record your video loops.",
+        "NSMicrophoneUsageDescription": "Aesthetic needs microphone access to record audio for your loops."
+      }
+    },
+    "android": {
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {}
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Aesthetic needs camera access to record your video loops.",
+          "microphonePermission": "Aesthetic needs microphone access to record audio for your loops.",
+          "recordAudioAndroid": true
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
