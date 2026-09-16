@@ -83,11 +83,12 @@ const DISARM_TIMEOUT_MS = 10_000;
 // ── Guard predicates ─────────────────────────────────────────────────────
 
 function canArm(s: MachineState): boolean {
+  const currentCount = s.loops.length + (s.phase === "browsing" && s.pendingLoop ? 1 : 0);
   return (
-    (s.phase === "idle" || s.phase === "playing") &&
+    (s.phase === "idle" || s.phase === "playing" || s.phase === "browsing") &&
     s.masterDuration !== null &&
     s.masterDuration > 0 &&
-    s.loops.length < MAX_LOOPS
+    currentCount <= MAX_LOOPS
   );
 }
 
@@ -116,7 +117,7 @@ function canEditLoop(s: MachineState): boolean {
 }
 
 function canFinalize(s: MachineState): boolean {
-  return s.phase === "playing" && s.loops.length > 0;
+  return (s.phase === "playing" || s.phase === "browsing") && (s.loops.length > 0 || s.pendingLoop !== null);
 }
 
 function canRemoveLoop(s: MachineState): boolean {
@@ -150,6 +151,34 @@ export function reduceLoopIntent(
         }
         return { state: prev, rejected: "Can't arm right now", effects: [] };
       }
+
+      // Provisional commit: if arming while browsing, commit the pending take
+      if (s.phase === "browsing" && s.pendingLoop && s.masterDuration) {
+        const md = s.masterDuration;
+        const pending = s.pendingLoop;
+        const start = Math.max(0, Math.min(pending.duration - md, pending.duration - md));
+        const endTrim = Math.min(start + md, pending.duration);
+        const newLoop: Loop = {
+          id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
+          videoUri: pending.uri,
+          duration: pending.duration,
+          startTrim: start,
+          endTrim,
+          waveformData: pending.waveformData,
+          layerIndex: s.loops.length,
+          volume: 1.0,
+          muted: false,
+          videoOpacity: 0.85,
+          fullRecordingUri: pending.fullRecordingUri ?? pending.uri,
+          fullRecordingDuration: pending.fullRecordingDuration ?? pending.duration,
+          bracketStartMs: start,
+        };
+        s.loops = [...s.loops, newLoop];
+        s.pendingLoop = null;
+        effects.push({ type: "SAVE_LOOPS", loops: s.loops });
+        effects.push({ type: "SYNC_LOOP", loop: newLoop, masterDuration: md, beatsPerLoop, detectedBpm: null });
+      }
+
       s.phase = "armed";
       effects.push({ type: "SET_DISARM_TIMER", ms: DISARM_TIMEOUT_MS });
       if (!clockRunning) {
@@ -340,11 +369,38 @@ export function reduceLoopIntent(
     // ── FINALIZE ─────────────────────────────────────────────────────
     case "FINALIZE": {
       if (!canFinalize(s)) {
-        if (s.loops.length === 0) {
+        if (s.loops.length === 0 && !s.pendingLoop) {
           return { state: prev, rejected: "Record at least one layer first", effects: [] };
         }
         return { state: prev, rejected: "Can't finalize right now", effects: [] };
       }
+
+      // Provisional commit if finalizing while browsing
+      if (s.phase === "browsing" && s.pendingLoop && s.masterDuration) {
+        const md = s.masterDuration;
+        const pending = s.pendingLoop;
+        const start = Math.max(0, Math.min(pending.duration - md, pending.duration - md));
+        const endTrim = Math.min(start + md, pending.duration);
+        const newLoop: Loop = {
+          id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
+          videoUri: pending.uri,
+          duration: pending.duration,
+          startTrim: start,
+          endTrim,
+          waveformData: pending.waveformData,
+          layerIndex: s.loops.length,
+          volume: 1.0,
+          muted: false,
+          videoOpacity: 0.85,
+          fullRecordingUri: pending.fullRecordingUri ?? pending.uri,
+          fullRecordingDuration: pending.fullRecordingDuration ?? pending.duration,
+          bracketStartMs: start,
+        };
+        s.loops = [...s.loops, newLoop];
+        s.pendingLoop = null;
+        effects.push({ type: "SYNC_LOOP", loop: newLoop, masterDuration: md, beatsPerLoop, detectedBpm: null });
+      }
+
       s.phase = "finalized";
       s.editingLoop = null;
       effects.push({ type: "SAVE_LOOPS", loops: s.loops });

@@ -391,3 +391,65 @@ export async function exportAllClips(
   }
   return clips;
 }
+
+export interface ProjectBundle {
+  manifestUri: string;
+  clips: ExportedClip[];
+}
+
+/**
+ * Creates a project manifest and copies all layer stems into the export directory.
+ * Returns the URI to the manifest file which can be shared or inspected.
+ */
+export async function exportProjectBundle(
+  loops: Loop[],
+  masterDuration: number | null,
+  beatsPerLoop: number,
+  onProgress?: (done: number, total: number) => void
+): Promise<ProjectBundle> {
+  const clips = await exportAllClips(loops, onProgress);
+
+  const manifest = {
+    app: "LoopLayer",
+    version: "1.0.0",
+    exportedAt: new Date().toISOString(),
+    masterDurationMs: masterDuration ?? (loops[0]?.duration || 0),
+    beatsPerLoop,
+    bpm: masterDuration
+      ? Math.round((beatsPerLoop * 60_000) / masterDuration)
+      : null,
+    layers: loops.map((l) => ({
+      id: l.id,
+      layerIndex: l.layerIndex,
+      durationMs: l.duration,
+      startTrimMs: l.startTrim,
+      endTrimMs: l.endTrim,
+      bracketStartMs: l.bracketStartMs,
+      volume: l.volume,
+      videoUri: l.videoUri,
+    })),
+  };
+
+  if (Platform.OS === "web") {
+    const blob = new Blob([JSON.stringify(manifest, null, 2)], {
+      type: "application/json",
+    });
+    const manifestUri = URL.createObjectURL(blob);
+    return { manifestUri, clips };
+  }
+
+  const fs = await import("expo-file-system");
+  const { File, Directory, Paths } = fs;
+  const exportDir = new Directory(Paths.document, "LoopLayer Exports");
+  if (!exportDir.exists) exportDir.create({ intermediates: true });
+
+  const manifestFile = new File(exportDir, "looplayer_manifest.json");
+  if (manifestFile.exists) manifestFile.delete();
+  manifestFile.write(JSON.stringify(manifest, null, 2));
+
+  return {
+    manifestUri: manifestFile.uri,
+    clips,
+  };
+}
+

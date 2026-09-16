@@ -5,7 +5,7 @@
  * route (headphones / bluetooth / speaker / earpiece).
  */
 import React from "react";
-import { StyleSheet, TouchableOpacity } from "react-native";
+import { Alert, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
@@ -26,12 +26,33 @@ export default function MonitorCompact({
   onOpenSettings,
 }: MonitorCompactProps) {
   const colors = useColors();
+
+  const handlePress = () => {
+    if (!monitorOn && (route === "speaker" || route === "auto")) {
+      Alert.alert(
+        "Acoustic Feedback Risk",
+        "Enabling monitor while routed to internal speakers can cause loud acoustic feedback loops into your microphone. We recommend using headphones.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Enable Anyway",
+            style: "destructive",
+            onPress: () => {
+              onToggle();
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            },
+          },
+        ]
+      );
+    } else {
+      onToggle();
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
   return (
     <TouchableOpacity
-      onPress={() => {
-        onToggle();
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      }}
+      onPress={handlePress}
       onLongPress={() => {
         onOpenSettings();
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);

@@ -6,6 +6,7 @@
  */
 import React, { useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Modal,
   PanResponder,
   Platform,
@@ -109,6 +110,25 @@ export default function MonitorSheet({
     }
   };
 
+  const handleToggleWithGuard = () => {
+    if (!monitorOn && (route === "speaker" || route === "auto")) {
+      Alert.alert(
+        "Acoustic Feedback Risk",
+        "Enabling monitor while routed to internal speakers can cause loud acoustic feedback loops into your microphone. We recommend using wired or Bluetooth headphones.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Enable Anyway",
+            style: "destructive",
+            onPress: () => onMonitorToggle(),
+          },
+        ]
+      );
+    } else {
+      onMonitorToggle();
+    }
+  };
+
   const pct = Math.round(volume * 100);
 
   return (
@@ -145,7 +165,7 @@ export default function MonitorSheet({
               </Text>
               <Switch
                 value={monitorOn}
-                onValueChange={onMonitorToggle}
+                onValueChange={handleToggleWithGuard}
                 trackColor={{ false: colors.muted, true: colors.primary }}
                 thumbColor={colors.foreground}
               />

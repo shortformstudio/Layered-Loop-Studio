@@ -23,6 +23,7 @@ import { font, tracking } from "@/constants/typography";
 import {
   exportAllClips,
   exportCompositeOnWeb,
+  exportProjectBundle,
   type CompositeClip,
   type ExportedClip,
 } from "@/utils/export-clips";
@@ -42,9 +43,10 @@ function fmt(ms: number) {
 export default function ExportPanel({ visible, loops, onClose }: ExportPanelProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { masterDuration } = useLoops();
+  const { masterDuration, beatsPerLoop } = useLoops();
 
   const [running, setRunning] = useState(false);
+  const [bundleRunning, setBundleRunning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [clips, setClips] = useState<ExportedClip[]>([]);
   const [errors, setErrors] = useState<Record<number, string>>({});
@@ -142,7 +144,7 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
     });
     setClips([]);
     try {
-      const result = await exportAllClips(currentLoops, (done, total) =>
+      const result = await exportAllClips(currentLoops, (done: number, total: number) =>
         setProgress({ done, total })
       );
       setClips(result);
@@ -156,6 +158,48 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
       setRunning(false);
     }
   }, [running]);
+
+  const handleExportBundle = useCallback(async () => {
+    const currentLoops = loopsRef.current;
+    if (bundleRunning || currentLoops.length === 0) return;
+    setBundleRunning(true);
+    setErrors({});
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const bundle = await exportProjectBundle(
+        currentLoops,
+        masterDuration,
+        beatsPerLoop,
+        (done, total) => setProgress({ done, total })
+      );
+      setClips(bundle.clips);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      if (Platform.OS === "web") {
+        const anchor = document.createElement("a");
+        anchor.href = bundle.manifestUri;
+        anchor.download = "looplayer_manifest.json";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } else {
+        const Sharing = await import("expo-sharing");
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(bundle.manifestUri, {
+            mimeType: "application/json",
+            dialogTitle: "LoopLayer Project Manifest",
+          });
+        }
+      }
+    } catch (e) {
+      setErrors({
+        "-1": e instanceof Error ? e.message : "Bundle export failed.",
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setBundleRunning(false);
+    }
+  }, [bundleRunning, masterDuration, beatsPerLoop]);
 
   const handleSaveWeb = (clip: ExportedClip) => {
     Haptics.selectionAsync();
@@ -369,36 +413,67 @@ export default function ExportPanel({ visible, loops, onClose }: ExportPanelProp
           </ScrollView>
 
           {/* ── Footer ── */}
-          <TouchableOpacity
-            onPress={handleExportAll}
-            disabled={running || ordered.length === 0}
-            style={[
-              styles.exportBtn,
-              {
-                backgroundColor: running ? colors.muted : colors.primary,
-              },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel="Export all layer clips"
-          >
-            <Ionicons
-              name="videocam-outline"
-              size={17}
-              color={running ? colors.mutedForeground : colors.primaryForeground}
-            />
-            <Text
+          <View style={{ gap: 8 }}>
+            <TouchableOpacity
+              onPress={handleExportBundle}
+              disabled={bundleRunning || running || ordered.length === 0}
               style={[
-                styles.exportTxt,
-                { fontFamily: font.thin, color: running ? colors.mutedForeground : colors.primaryForeground },
+                styles.exportBtn,
+                {
+                  backgroundColor: bundleRunning ? colors.muted : colors.cardAlt,
+                  borderColor: colors.border,
+                  borderWidth: 1,
+                },
               ]}
+              accessibilityRole="button"
+              accessibilityLabel="Export Project Bundle"
             >
-              {running
-                ? `Exporting ${progress.done}/${progress.total}…`
-                : allDone
-                  ? "Export Again"
-                  : "Export All Clips"}
-            </Text>
-          </TouchableOpacity>
+              <Ionicons
+                name="folder-outline"
+                size={17}
+                color={bundleRunning ? colors.mutedForeground : colors.foreground}
+              />
+              <Text
+                style={[
+                  styles.exportTxt,
+                  { fontFamily: font.thin, color: bundleRunning ? colors.mutedForeground : colors.foreground },
+                ]}
+              >
+                {bundleRunning ? "Packaging Bundle…" : "Export Project Bundle (Stems + Manifest)"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleExportAll}
+              disabled={running || bundleRunning || ordered.length === 0}
+              style={[
+                styles.exportBtn,
+                {
+                  backgroundColor: running ? colors.muted : colors.primary,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Export all layer clips"
+            >
+              <Ionicons
+                name="videocam-outline"
+                size={17}
+                color={running ? colors.mutedForeground : colors.primaryForeground}
+              />
+              <Text
+                style={[
+                  styles.exportTxt,
+                  { fontFamily: font.thin, color: running ? colors.mutedForeground : colors.primaryForeground },
+                ]}
+              >
+                {running
+                  ? `Exporting ${progress.done}/${progress.total}…`
+                  : allDone
+                    ? "Export Again"
+                    : "Export All Clips"}
+              </Text>
+            </TouchableOpacity>
+          </View>
 
           {Platform.OS !== "web" && (
             <Text style={[styles.nativeNote, { fontFamily: font.thin, color: colors.mutedForeground }]}>

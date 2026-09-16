@@ -38,6 +38,7 @@ const SEEK_TOL = { toleranceMillisBefore: 30, toleranceMillisAfter: 30 };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 interface SyncHandle {
+  id: string;
   getRef: () => Video | null;
   startTrim: number;
   endTrim: number;
@@ -55,6 +56,7 @@ interface VideoLayerProps {
   register: (id: string, handle: SyncHandle) => void;
   unregister: (id: string) => void;
   markLoaded: (id: string, loaded: boolean) => void;
+  updateTrim: (id: string, startTrim: number, endTrim: number) => void;
 }
 
 function VideoLayer({
@@ -66,12 +68,14 @@ function VideoLayer({
   register,
   unregister,
   markLoaded,
+  updateTrim,
 }: VideoLayerProps) {
   const videoRef = useRef<Video>(null);
 
   // Register with the coordinator — the coordinator drives all transport.
   useEffect(() => {
     const handle: SyncHandle = {
+      id: loop.id,
       getRef: () => videoRef.current,
       startTrim: loop.startTrim,
       endTrim: loop.endTrim,
@@ -83,12 +87,8 @@ function VideoLayer({
 
   // Keep trim changes live on the registered handle.
   useEffect(() => {
-    const h = handlesById.get(loop.id);
-    if (h) {
-      h.startTrim = loop.startTrim;
-      h.endTrim = loop.endTrim;
-    }
-  }, [loop.id, loop.startTrim, loop.endTrim]);
+    updateTrim(loop.id, loop.startTrim, loop.endTrim);
+  }, [updateTrim, loop.id, loop.startTrim, loop.endTrim]);
 
   // Status: report loaded state + boundary safety net.
   // CRITICAL: no shouldPlay prop on the Video below — expo-av re-applies
@@ -149,7 +149,8 @@ function areVideoLayerPropsEqual(
     prev.isPlaying === next.isPlaying &&
     prev.register === next.register &&
     prev.unregister === next.unregister &&
-    prev.markLoaded === next.markLoaded
+    prev.markLoaded === next.markLoaded &&
+    prev.updateTrim === next.updateTrim
   );
 }
 
@@ -164,12 +165,6 @@ interface VideoStackProps {
   /** Which loop ID is currently soloed (null = none) */
   soloedId?: string | null;
 }
-
-// Registry lives at module level so VideoLayer effects can reach it
-// through the register callbacks without prop-drilling every render.
-// Wrapped in refs inside the component to survive hot reloads cleanly.
-let handlesById = new Map<string, SyncHandle>();
-let loadedById = new Map<string, boolean>();
 
 export default function VideoStack({
   loops,
@@ -186,20 +181,37 @@ export default function VideoStack({
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
 
+  // Instance-scoped registries — no global Maps outside the component
+  const handlesRef = useRef<Map<string, SyncHandle>>(new Map());
+  const loadedRef = useRef<Map<string, boolean>>(new Map());
+
   const register = useCallback((id: string, handle: SyncHandle) => {
-    handlesById.set(id, handle);
-    handle.loaded = loadedById.get(id) ?? false;
+    handlesRef.current.set(id, handle);
+    handle.loaded = loadedRef.current.get(id) ?? false;
   }, []);
 
   const unregister = useCallback((id: string) => {
-    handlesById.delete(id);
-    loadedById.delete(id);
+    const h = handlesRef.current.get(id);
+    if (h) {
+      h.getRef()?.pauseAsync().catch(() => {});
+    }
+    handlesRef.current.delete(id);
+    loadedRef.current.delete(id);
+    joinedIds.current.delete(id);
   }, []);
 
   const markLoaded = useCallback((id: string, loaded: boolean) => {
-    loadedById.set(id, loaded);
-    const h = handlesById.get(id);
+    loadedRef.current.set(id, loaded);
+    const h = handlesRef.current.get(id);
     if (h) h.loaded = loaded;
+  }, []);
+
+  const updateTrim = useCallback((id: string, startTrim: number, endTrim: number) => {
+    const h = handlesRef.current.get(id);
+    if (h) {
+      h.startTrim = startTrim;
+      h.endTrim = endTrim;
+    }
   }, []);
 
   const clearTimers = () => {
@@ -219,7 +231,7 @@ export default function VideoStack({
       wrapTimer.current = setTimeout(() => {
         if (token !== runToken.current) return;
         // One instant — every layer re-anchors to its startTrim together.
-        const all = [...handlesById.values()];
+        const all = [...handlesRef.current.values()];
         if (__DEV__) console.log(`[sync] wrap fired — ${all.length} layer(s)`);
         Promise.allSettled(
           all.map((h) =>
@@ -232,7 +244,7 @@ export default function VideoStack({
         // Diagnostic: verify where each layer actually landed.
         setTimeout(async () => {
           if (token !== runToken.current) return;
-          for (const h of handlesById.values()) {
+          for (const h of handlesRef.current.values()) {
             try {
               const st = await h.getRef()?.getStatusAsync();
               if (st && st.isLoaded) {
@@ -254,7 +266,7 @@ export default function VideoStack({
 
     if (!isPlaying) {
       // Stop: one instant — every layer pauses together.
-      const all = [...handlesById.values()];
+      const all = [...handlesRef.current.values()];
       all.forEach((h) => {
         h.getRef()?.pauseAsync().catch(() => {});
       });
@@ -274,13 +286,13 @@ export default function VideoStack({
       const t0 = Date.now();
       while (Date.now() - t0 < 8000) {
         if (token !== runToken.current) return;
-        const all = [...handlesById.values()];
+        const all = [...handlesRef.current.values()];
         if (all.length > 0 && all.every((h) => h.loaded)) break;
         await sleep(100);
       }
       if (token !== runToken.current) return;
 
-      const all = [...handlesById.values()];
+      const all = [...handlesRef.current.values()];
       const ready = all.filter((h) => h.loaded);
       const failed = all.filter((h) => !h.loaded);
       if (failed.length > 0) {
@@ -290,7 +302,7 @@ export default function VideoStack({
       if (__DEV__) console.log(
         `[sync] kickoff — ${all.length} layer(s), loaded: ${all.map((h) => h.loaded).join(",")}`
       );
-      joinedIds.current = new Set(all.map((h) => getLayerId(h)));
+      joinedIds.current = new Set(all.map((h) => h.id));
 
       // 1. Single anchor: the same clock position for every layer.
       const pos0 = getPlaybackPosition() ?? 0;
@@ -319,7 +331,7 @@ export default function VideoStack({
       //    converges inside tolerance (max 3 passes).
       settleTimer.current = setTimeout(async () => {
         if (token !== runToken.current) return;
-        const live = [...handlesById.values()];
+        const live = [...handlesRef.current.values()];
         for (const h of live) {
           for (let attempt = 0; attempt < 3; attempt++) {
             if (token !== runToken.current) return;
@@ -365,11 +377,11 @@ export default function VideoStack({
         joinedIds.current.add(loop.id);
         // Wait for this specific layer to load — up to 8s, polling every 100ms.
         let waited = 0;
-        let h = handlesById.get(loop.id);
+        let h = handlesRef.current.get(loop.id);
         while (h && !h.loaded && waited < 8000) {
           await sleep(100);
           waited += 100;
-          h = handlesById.get(loop.id);
+          h = handlesRef.current.get(loop.id);
         }
         if (token !== runToken.current) return;
         if (!h || !h.loaded) {
@@ -408,6 +420,19 @@ export default function VideoStack({
     return () => clearTimeout(timer);
   }, [loops, isPlaying, masterDuration, getPlaybackPosition]);
 
+  // Clean unmount teardown
+  useEffect(() => {
+    return () => {
+      clearTimers();
+      for (const h of handlesRef.current.values()) {
+        h.getRef()?.pauseAsync().catch(() => {});
+      }
+      handlesRef.current.clear();
+      loadedRef.current.clear();
+      joinedIds.current.clear();
+    };
+  }, []);
+
   if (loops.length === 0) return null;
 
   return (
@@ -437,16 +462,10 @@ export default function VideoStack({
             register={register}
             unregister={unregister}
             markLoaded={markLoaded}
+            updateTrim={updateTrim}
           />
         );
       })}
     </View>
   );
-}
-
-function getLayerId(h: SyncHandle): string {
-  for (const [id, handle] of handlesById.entries()) {
-    if (handle === h) return id;
-  }
-  return "";
 }

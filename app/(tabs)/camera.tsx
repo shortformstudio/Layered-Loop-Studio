@@ -46,6 +46,7 @@ import MonitorSheet, { type MonitorRoute } from "@/components/MonitorSheet";
 import LiveRecordTimeline from "@/components/LiveRecordTimeline";
 import VerticalFader from "@/components/VerticalFader";
 import ExportPanel from "@/components/studio/ExportPanel";
+import ToastHUD from "@/components/ToastHUD";
 import { loopPositionLabel } from "@/lib/loopModel";
 
 const NAVY_BG = "#0A0D14";
@@ -173,6 +174,7 @@ export default function CameraScreen() {
     getNextLoopBoundary, finalizeProject, updateLoopTrack,
     setSoloedId, beatsPerLoop, lockBeatsPerLoop,
     subscribePlayback, getPlaybackPosition, pendingBracketMs, setPendingBracket,
+    lastRejected, clearRejected, restorePlaybackAudioMode,
   } = useLoops();
 
   const cameraRef = useRef<CameraView>(null);
@@ -310,6 +312,14 @@ export default function CameraScreen() {
     if (phase === "recording") return;
     applyAudioMode();
   }, [applyAudioMode, phase]);
+
+  // When leaving the camera or unmounting, ensure iOS/Android audio session
+  // is restored to clean playback mode (allowsRecordingIOS: false)
+  useEffect(() => {
+    return () => {
+      restorePlaybackAudioMode();
+    };
+  }, [restorePlaybackAudioMode]);
 
   // Persisted monitor preferences — volume + verified route.
   useEffect(() => {
@@ -523,11 +533,13 @@ export default function CameraScreen() {
       return;
     }
     if (router.canGoBack()) {
+      restorePlaybackAudioMode();
       router.back();
     } else {
+      restorePlaybackAudioMode();
       router.replace("/");
     }
-  }, [phase, pendingLoop, disarmRecording, discardPending, confirmBracket]);
+  }, [phase, pendingLoop, disarmRecording, discardPending, confirmBracket, restorePlaybackAudioMode]);
 
   // Arm the next take. The clock keeps running — the remaining loop glows
   // and recording begins as it closes (quantized overdub).
@@ -1044,6 +1056,15 @@ export default function CameraScreen() {
             }}
             onToggleSolo={(id) => setSoloedId(soloedId === id ? null : id)}
             onRemoveLoop={isFinalized ? () => {} : removeLoop}
+            onBracketChange={(id, bracketStartMs) => {
+              const md = masterDuration ?? 0;
+              updateLoopTrack(id, {
+                bracketStartMs,
+                startTrim: bracketStartMs,
+                endTrim: bracketStartMs + md,
+              });
+            }}
+            onAuditionSolo={(id) => setSoloedId(id)}
           />
         )}
 
@@ -1269,6 +1290,12 @@ export default function CameraScreen() {
         route={monitorRoute}
         onRouteChange={setMonitorRoutePersist}
         isRecording={isRecording}
+      />
+
+      <ToastHUD
+        message={lastRejected}
+        onDismiss={clearRejected}
+        topOffset={topPad + 48}
       />
     </View>
   );

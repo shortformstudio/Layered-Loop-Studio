@@ -8,7 +8,14 @@
  * phase for that layer (non-destructive trim / delete).
  */
 import React, { useCallback, useEffect, useMemo, useRef } from "react";
-import { StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
+import {
+  PanResponder,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import Svg, { Line, Rect } from "react-native-svg";
 import Animated, {
   useAnimatedStyle,
@@ -38,6 +45,8 @@ interface StackedTimelineProps {
   onToggleMute: (id: string) => void;
   onToggleSolo: (id: string) => void;
   onRemoveLoop: (id: string) => void;
+  onBracketChange?: (id: string, bracketStartMs: number) => void;
+  onAuditionSolo?: (id: string | null) => void;
 }
 
 /** Slice the loop's waveform to its phrase window, resampled to BAR_COUNT. */
@@ -115,6 +124,222 @@ function BeatGrid({ beats, width, color }: { beats: number; width: number; color
   );
 }
 
+interface TrackRowProps {
+  loop: Loop;
+  isMaster: boolean;
+  isSoloed: boolean;
+  rowColor: string;
+  dimmed: boolean;
+  waveW: number;
+  beatsPerLoop: number;
+  masterDuration: number | null;
+  onEdit: (id: string) => void;
+  onToggleSolo: (id: string) => void;
+  onToggleMute: (id: string) => void;
+  onRemove: (id: string) => void;
+  onBracketChange?: (id: string, bracketStartMs: number) => void;
+  onAuditionSolo?: (id: string | null) => void;
+  colors: ReturnType<typeof useColors>;
+}
+
+function TrackRow({
+  loop,
+  isMaster,
+  isSoloed,
+  rowColor,
+  dimmed,
+  waveW,
+  beatsPerLoop,
+  masterDuration,
+  onEdit,
+  onToggleSolo,
+  onToggleMute,
+  onRemove,
+  onBracketChange,
+  onAuditionSolo,
+  colors,
+}: TrackRowProps) {
+  const md = masterDuration ?? 0;
+  const beatMs = md > 0 && beatsPerLoop > 0 ? md / beatsPerLoop : 500;
+  const initialBracket = useRef(loop.bracketStartMs);
+  const maxBracket = Math.max(0, loop.fullRecordingDuration - (md || loop.duration));
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gs) =>
+          !isMaster && Math.abs(gs.dx) > 8 && Math.abs(gs.dx) > Math.abs(gs.dy),
+        onPanResponderGrant: () => {
+          initialBracket.current = loop.bracketStartMs;
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        },
+        onPanResponderMove: (_, gs) => {
+          if (isMaster || !onBracketChange || maxBracket <= 0) return;
+          const shiftBeats = Math.round((-gs.dx / waveW) * beatsPerLoop);
+          const candidate = initialBracket.current + shiftBeats * beatMs;
+          const clamped = Math.max(0, Math.min(maxBracket, candidate));
+          if (Math.abs(clamped - loop.bracketStartMs) >= beatMs * 0.8) {
+            onBracketChange(loop.id, clamped);
+            Haptics.selectionAsync();
+          }
+        },
+        onPanResponderRelease: () => {},
+      }),
+    [isMaster, onBracketChange, maxBracket, waveW, beatsPerLoop, beatMs, loop.bracketStartMs, loop.id]
+  );
+
+  return (
+    <View style={styles.rowTouch}>
+      <View style={[styles.labelCol, { width: LABEL_W }]}>
+        <View
+          style={[
+            styles.badge,
+            {
+              backgroundColor: isMaster
+                ? `${colors.primary}26`
+                : isSoloed
+                ? `${colors.accent}26`
+                : colors.muted,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.badgeNum,
+              {
+                fontFamily: font.demi,
+                color: isMaster
+                  ? colors.primary
+                  : isSoloed
+                  ? colors.accent
+                  : colors.mutedForeground,
+              },
+            ]}
+          >
+            {loop.layerIndex + 1}
+          </Text>
+        </View>
+        {loop.syncState === "failed" && (
+          <View style={[styles.syncDot, { backgroundColor: colors.accent }]} />
+        )}
+        {loop.syncState === "pending" && (
+          <View style={[styles.syncDot, { backgroundColor: colors.primary }]} />
+        )}
+        <View style={styles.smRow}>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.selectionAsync();
+              onToggleSolo(loop.id);
+            }}
+            onPressIn={() => {
+              if (onAuditionSolo) {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                onAuditionSolo(loop.id);
+              }
+            }}
+            onPressOut={() => {
+              if (onAuditionSolo) {
+                onAuditionSolo(null);
+              }
+            }}
+            style={[
+              styles.smBtn,
+              {
+                backgroundColor: isSoloed ? colors.accent : "transparent",
+                borderColor: isSoloed ? colors.accent : colors.border,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Solo layer ${loop.layerIndex + 1} (press and hold to audition)`}
+            accessibilityState={{ selected: isSoloed }}
+            hitSlop={4}
+          >
+            <Text
+              style={[
+                styles.smTxt,
+                {
+                  fontFamily: font.thin,
+                  color: isSoloed ? colors.onDark : colors.mutedForeground,
+                },
+              ]}
+            >
+              S
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.selectionAsync();
+              onToggleMute(loop.id);
+            }}
+            style={[
+              styles.smBtn,
+              {
+                backgroundColor: loop.muted ? `${colors.foreground}22` : "transparent",
+                borderColor: loop.muted ? colors.foreground : colors.border,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Mute layer ${loop.layerIndex + 1}`}
+            accessibilityState={{ selected: loop.muted }}
+            hitSlop={4}
+          >
+            <Text
+              style={[
+                styles.smTxt,
+                {
+                  fontFamily: font.thin,
+                  color: loop.muted ? colors.foreground : colors.mutedForeground,
+                },
+              ]}
+            >
+              M
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => onEdit(loop.id)}
+        style={[styles.wave, { width: waveW }]}
+        {...panResponder.panHandlers}
+        accessibilityLabel={`Layer ${loop.layerIndex + 1} — swipe horizontally to scrub bracket or tap to edit`}
+      >
+        <WaveformRow loop={loop} width={waveW} color={rowColor} dimmed={dimmed} />
+        <BeatGrid beats={Math.max(2, beatsPerLoop)} width={waveW} color={`${colors.foreground}1E`} />
+        {!loop.muted && (
+          <View
+            style={[
+              styles.volLine,
+              {
+                width: `${(loop.volume ?? 1) * 100}%`,
+                backgroundColor: isMaster ? colors.primary : colors.mutedForeground,
+                opacity: 0.5,
+              },
+            ]}
+          />
+        )}
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          onRemove(loop.id);
+        }}
+        style={styles.removeBtn}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete layer ${loop.layerIndex + 1}`}
+        hitSlop={6}
+      >
+        <Text style={[styles.removeX, { fontFamily: font.thin, color: colors.mutedForeground }]}>
+          ×
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function StackedTimeline({
   loops,
   masterDuration,
@@ -124,6 +349,8 @@ export default function StackedTimeline({
   onToggleMute,
   onToggleSolo,
   onRemoveLoop,
+  onBracketChange,
+  onAuditionSolo,
 }: StackedTimelineProps) {
   const colors = useColors();
   const { width: screenW } = useWindowDimensions();
@@ -131,11 +358,6 @@ export default function StackedTimeline({
 
   const { subscribePlayback } = useLoops();
 
-  // Live playhead — driven by the shared playback clock on the JS thread.
-  // CRITICAL: no worklet captures any mutable ref here. A previous
-  // useFrameCallback captured posRef/mdRef while the render body mutated
-  // their `.current` — reanimated 4 treats that as a worklet violation and
-  // crashes the UI thread on iOS (this killed the app on screen entry).
   const playheadX = useSharedValue(-1);
   const mdRef = useRef(masterDuration);
   mdRef.current = masterDuration;
@@ -193,104 +415,23 @@ export default function StackedTimeline({
 
         return (
           <View key={loop.id} style={[styles.rowWrap, { marginTop: i === 0 ? 0 : ROW_GAP }]}>
-            <TouchableOpacity
-              style={styles.rowTouch}
-              activeOpacity={0.85}
-              onPress={() => handleRowPress(loop.id)}
-              accessibilityLabel={`Layer ${loop.layerIndex + 1} — tap to edit trim`}
-            >
-              <View style={[styles.labelCol, { width: LABEL_W }]}>
-                <View
-                  style={[
-                    styles.badge,
-                    {
-                      backgroundColor: isMaster
-                        ? `${colors.primary}26`
-                        : isSoloed
-                        ? `${colors.accent}26`
-                        : colors.muted,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.badgeNum,
-                      { fontFamily: font.demi, color: isMaster ? colors.primary : isSoloed ? colors.accent : colors.mutedForeground },
-                    ]}
-                  >
-                    {loop.layerIndex + 1}
-                  </Text>
-                </View>
-                {/* Sync status dot (G43) */}
-                {loop.syncState === "failed" && (
-                  <View style={[styles.syncDot, { backgroundColor: colors.accent }]} />
-                )}
-                {loop.syncState === "pending" && (
-                  <View style={[styles.syncDot, { backgroundColor: colors.primary }]} />
-                )}
-                <View style={styles.smRow}>
-                  <TouchableOpacity
-                    onPress={() => { Haptics.selectionAsync(); onToggleSolo(loop.id); }}
-                    style={[
-                      styles.smBtn,
-                      {
-                        backgroundColor: isSoloed ? colors.accent : "transparent",
-                        borderColor: isSoloed ? colors.accent : colors.border,
-                      },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Solo layer ${loop.layerIndex + 1}`}
-                    accessibilityState={{ selected: isSoloed }}
-                    hitSlop={4}
-                  >
-                    <Text style={[styles.smTxt, { fontFamily: font.thin, color: isSoloed ? colors.onDark : colors.mutedForeground }]}>S</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => { Haptics.selectionAsync(); onToggleMute(loop.id); }}
-                    style={[
-                      styles.smBtn,
-                      {
-                        backgroundColor: loop.muted ? `${colors.foreground}22` : "transparent",
-                        borderColor: loop.muted ? colors.foreground : colors.border,
-                      },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Mute layer ${loop.layerIndex + 1}`}
-                    accessibilityState={{ selected: loop.muted }}
-                    hitSlop={4}
-                  >
-                    <Text style={[styles.smTxt, { fontFamily: font.thin, color: loop.muted ? colors.foreground : colors.mutedForeground }]}>M</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={[styles.wave, { width: waveW }]}>
-                <WaveformRow loop={loop} width={waveW} color={rowColor} dimmed={dimmed} />
-                <BeatGrid beats={Math.max(2, beatsPerLoop)} width={waveW} color={`${colors.foreground}1E`} />
-                {!loop.muted && (
-                  <View
-                    style={[
-                      styles.volLine,
-                      {
-                        width: `${(loop.volume ?? 1) * 100}%`,
-                        backgroundColor: isMaster ? colors.primary : colors.mutedForeground,
-                        opacity: 0.5,
-                      },
-                    ]}
-                  />
-                )}
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onRemoveLoop(loop.id); }}
-              style={styles.removeBtn}
-              accessibilityRole="button"
-              accessibilityLabel={`Delete layer ${loop.layerIndex + 1}`}
-              hitSlop={6}
-            >
-              <Text style={[styles.removeX, { fontFamily: font.thin, color: colors.mutedForeground }]}>×</Text>
-            </TouchableOpacity>
+            <TrackRow
+              loop={loop}
+              isMaster={isMaster}
+              isSoloed={isSoloed}
+              rowColor={rowColor}
+              dimmed={dimmed}
+              waveW={waveW}
+              beatsPerLoop={beatsPerLoop}
+              masterDuration={masterDuration}
+              onEdit={handleRowPress}
+              onToggleSolo={onToggleSolo}
+              onToggleMute={onToggleMute}
+              onRemove={onRemoveLoop}
+              onBracketChange={onBracketChange}
+              onAuditionSolo={onAuditionSolo}
+              colors={colors}
+            />
           </View>
         );
       })}
