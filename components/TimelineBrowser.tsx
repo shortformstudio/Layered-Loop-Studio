@@ -12,7 +12,8 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
-import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
+import { createVideoPlayer, VideoView } from "expo-video";
+import type { VideoPlayer } from "expo-video";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -74,7 +75,8 @@ export default function TimelineBrowser({
   onDiscard,
 }: TimelineBrowserProps) {
   const colors = useColors();
-  const videoRef = useRef<Video>(null);
+  const playerRef = useRef<VideoPlayer | null>(null);
+  const [isReady, setIsReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoError, setVideoError] = useState(false);
 
@@ -118,7 +120,7 @@ export default function TimelineBrowser({
 
   // ── Clock-synced audition (fresh takes) ──────────────────────────────
   const { videoPosRef, jumpTo } = useClockSyncedPreview(
-    videoRef,
+    playerRef,
     bracketMsRef,
     syncWithClock,
     masterDuration
@@ -130,34 +132,60 @@ export default function TimelineBrowser({
     transform: [{ translateX: playheadX.value }],
   }));
 
-  const handleStatus = useCallback(
-    async (status: AVPlaybackStatus) => {
-      if (!status.isLoaded) return;
-      videoPosRef.current = status.positionMillis;
-      playheadX.value = withTiming(
-        (status.positionMillis / Math.max(1, safeDuration)) * WAVEFORM_W,
-        { duration: 120 }
-      );
-      if (syncWithClock || seekingRef.current) return;
-      const endMs = (bracketPosRef.current + bracketRatio) * safeDuration;
-      if (status.positionMillis >= endMs - 80) {
-        seekingRef.current = true;
-        try {
-          await videoRef.current?.setPositionAsync(bracketPosRef.current * safeDuration, {
-            toleranceMillisBefore: 120,
-            toleranceMillisAfter: 120,
-          });
-          playheadX.value = bracketPosRef.current * WAVEFORM_W;
-          if (!status.isPlaying) {
-            await videoRef.current?.playAsync();
-          }
-        } catch {
-          /* seek raced a load/unload — the next status update re-anchors */
-        } finally { seekingRef.current = false; }
-      }
-    },
-    [safeDuration, bracketRatio, syncWithClock, videoPosRef]
-  );
+  useEffect(() => {
+    const p = createVideoPlayer({ uri });
+    p.loop = false;
+    p.muted = false;
+    p.volume = volume;
+    p.timeUpdateEventInterval = 0.05;
+    const pc = p as unknown as {
+      addListener: (
+        ev: string,
+        cb: (data: { isPlaying?: boolean; currentTime?: number }) => void,
+      ) => { remove: () => void };
+    };
+    const subs: { remove: () => void }[] = [];
+    subs.push(
+      pc.addListener("playingChange", (d) => {
+        if (typeof d.isPlaying === "boolean") setIsPlaying(d.isPlaying);
+      }),
+    );
+    subs.push(
+      pc.addListener("timeUpdate", (d) => {
+        const curSec = d.currentTime ?? 0;
+        const curMs = curSec * 1000;
+        videoPosRef.current = curMs;
+        playheadX.value = (curMs / Math.max(1, safeDuration)) * WAVEFORM_W;
+
+        if (syncWithClock || seekingRef.current) return;
+        const endMs = (bracketPosRef.current + bracketRatio) * safeDuration;
+        if (curMs >= endMs - 80 || curMs < bracketPosRef.current * safeDuration - 80) {
+          seekingRef.current = true;
+          p.currentTime = (bracketPosRef.current * safeDuration) / 1000;
+          if (!p.playing) p.play();
+          seekingRef.current = false;
+        }
+      }),
+    );
+    playerRef.current = p;
+    setIsReady(true);
+    if (syncWithClock) {
+      p.play();
+    }
+    return () => {
+      subs.forEach((s) => {
+        try { s.remove(); } catch {}
+      });
+      try { p.pause(); p.release(); } catch {}
+      playerRef.current = null;
+    };
+  }, [uri, syncWithClock, safeDuration, bracketRatio]);
+
+  useEffect(() => {
+    if (playerRef.current) {
+      playerRef.current.volume = volume;
+    }
+  }, [volume]);
 
   // ── Bracket movement: drag (snap on release) + beat-step arrows ──────
   const applyBracket = useCallback((ms: number) => {
@@ -181,14 +209,16 @@ export default function TimelineBrowser({
   }, [beatUnitMs, maxBracketMs, syncWithClock, applyBracket, jumpTo]);
 
   const togglePlay = async () => {
+    const p = playerRef.current;
+    if (!p) return;
     try {
       if (!isPlaying) {
-        await videoRef.current?.setPositionAsync(bracketMsRef.current);
-        await videoRef.current?.playAsync();
+        p.currentTime = bracketMsRef.current / 1000;
+        p.play();
         setIsPlaying(true);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       } else {
-        await videoRef.current?.pauseAsync();
+        p.pause();
         setIsPlaying(false);
       }
     } catch {
@@ -305,18 +335,14 @@ export default function TimelineBrowser({
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Video preview */}
       <View style={[styles.video, { height: SCREEN_W * 0.46 }]}>
-        <Video
-          ref={videoRef}
-          source={{ uri }}
-          style={StyleSheet.absoluteFill}
-          resizeMode={ResizeMode.COVER}
-          shouldPlay={syncWithClock}
-          isLooping={false}
-          isMuted={false}
-          onPlaybackStatusUpdate={handleStatus}
-          useNativeControls={false}
-          onError={() => setVideoError(true)}
-        />
+        {isReady && playerRef.current ? (
+          <VideoView
+            player={playerRef.current}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        ) : null}
         {videoError && (
           <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000", alignItems: "center", justifyContent: "center" }]}>
             <Ionicons name="warning-outline" size={28} color={colors.accent} />
@@ -498,6 +524,7 @@ export default function TimelineBrowser({
           </View>
         )}
         <TouchableOpacity
+          testID="browser-confirm"
           onPress={handleConfirm}
           style={[styles.btnPri, { backgroundColor: colors.primary, opacity: takeInvalid ? 0.35 : 1 }]}
           disabled={takeInvalid}

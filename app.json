@@ -36,6 +36,8 @@
         "expo-router",
         {}
       ],
+      "expo-font",
+      "expo-web-browser",
       [
         "expo-camera",
         {
@@ -43,7 +45,9 @@
           "microphonePermission": "Aesthetic needs microphone access to record audio for your loops.",
           "recordAudioAndroid": true
         }
-      ]
+      ],
+      "expo-video",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true,

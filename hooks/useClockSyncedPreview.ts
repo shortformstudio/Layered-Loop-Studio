@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { Video } from "expo-av";
+import type { VideoPlayer } from "expo-video";
 
 import { useLoops } from "@/context/LoopContext";
 
@@ -14,7 +14,7 @@ import { useLoops } from "@/context/LoopContext";
  * (visible full preview) — both for fresh takes.
  */
 export function useClockSyncedPreview(
-  videoRef: React.RefObject<Video | null>,
+  playerRef: React.RefObject<VideoPlayer | null>,
   bracketMsRef: React.MutableRefObject<number>,
   active: boolean,
   masterDuration: number
@@ -29,20 +29,24 @@ export function useClockSyncedPreview(
   const chase = useCallback(() => {
     const pos = getPlaybackPosition();
     if (pos === null) return;
-    const target = bracketMsRef.current + pos;
-    if (Math.abs(videoPosRef.current - target) > 250) {
-      videoRef.current?.setPositionAsync(target).catch(() => {});
-      videoPosRef.current = target;
+    const targetMs = bracketMsRef.current + pos;
+    if (Math.abs(videoPosRef.current - targetMs) > 250) {
+      if (playerRef.current) {
+        playerRef.current.currentTime = targetMs / 1000;
+      }
+      videoPosRef.current = targetMs;
     }
     // Wrap at the master boundary with a short lead, matching VideoLayer.
     if (boundaryTimer.current) clearTimeout(boundaryTimer.current);
     const wait = Math.max(0, mdRef.current - pos - 150);
     boundaryTimer.current = setTimeout(() => {
       const b = bracketMsRef.current;
-      videoRef.current?.setPositionAsync(b).catch(() => {});
+      if (playerRef.current) {
+        playerRef.current.currentTime = b / 1000;
+      }
       videoPosRef.current = b;
     }, wait);
-  }, [getPlaybackPosition, videoRef, bracketMsRef]);
+  }, [getPlaybackPosition, playerRef, bracketMsRef]);
 
   useEffect(() => {
     if (!active) return;
@@ -59,10 +63,13 @@ export function useClockSyncedPreview(
     (bracketMs: number) => {
       const pos = getPlaybackPosition();
       if (pos === null) return;
-      videoRef.current?.setPositionAsync(bracketMs + pos).catch(() => {});
-      videoPosRef.current = bracketMs + pos;
+      const targetMs = bracketMs + pos;
+      if (playerRef.current) {
+        playerRef.current.currentTime = targetMs / 1000;
+      }
+      videoPosRef.current = targetMs;
     },
-    [getPlaybackPosition, videoRef]
+    [getPlaybackPosition, playerRef]
   );
 
   return { videoPosRef, jumpTo };

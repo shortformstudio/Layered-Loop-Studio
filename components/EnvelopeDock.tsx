@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PanResponder,
   StyleSheet,
@@ -6,7 +6,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { ResizeMode, Video } from "expo-av";
+import { createVideoPlayer, VideoView } from "expo-video";
+import type { VideoPlayer } from "expo-video";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -55,15 +56,51 @@ export default function EnvelopeDock({
 
   const [waveWidth, setWaveWidth] = useState(0);
 
-  const previewRef = useRef<Video>(null);
+  const playerRef = useRef<VideoPlayer | null>(null);
+  const [isReady, setIsReady] = useState(false);
   const bracketMsRef = useRef(pendingBracketMs);
   bracketMsRef.current = pendingBracketMs;
   const { videoPosRef, jumpTo } = useClockSyncedPreview(
-    previewRef,
+    playerRef,
     bracketMsRef,
     auditionActive,
     masterDuration ?? 0
   );
+
+  useEffect(() => {
+    if (!pendingLoop?.uri) return;
+    const p = createVideoPlayer({ uri: pendingLoop.uri });
+    p.loop = false;
+    p.muted = false;
+    p.volume = 1;
+    p.timeUpdateEventInterval = 0.05;
+    const pc = p as unknown as {
+      addListener: (
+        ev: string,
+        cb: (data: { isPlaying?: boolean; currentTime?: number }) => void,
+      ) => { remove: () => void };
+    };
+    const sub = pc.addListener("timeUpdate", (d) => {
+      videoPosRef.current = (d.currentTime ?? 0) * 1000;
+    });
+    playerRef.current = p;
+    setIsReady(true);
+    return () => {
+      try { sub.remove(); } catch {}
+      try { p.pause(); p.release(); } catch {}
+      playerRef.current = null;
+    };
+  }, [pendingLoop?.uri]);
+
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    if (auditionActive) {
+      p.play();
+    } else {
+      p.pause();
+    }
+  }, [auditionActive]);
 
   if (!pendingLoop || masterDuration === null) return null;
 
@@ -177,20 +214,14 @@ export default function EnvelopeDock({
   return (
     <GestureDetector gesture={swipeDown}>
       <View style={styles.dock}>
-        {/* Hidden audition video — audio only, clock-synced with the stack */}
-        <Video
-          ref={previewRef}
-          source={{ uri: pendingLoop.uri }}
-          style={styles.hiddenVideo}
-          resizeMode={ResizeMode.COVER}
-          shouldPlay={auditionActive}
-          isLooping={false}
-          isMuted={false}
-          volume={1}
-          onPlaybackStatusUpdate={(s) => {
-            if (s.isLoaded) videoPosRef.current = s.positionMillis;
-          }}
-        />
+        {isReady && playerRef.current ? (
+          <VideoView
+            player={playerRef.current}
+            style={styles.hiddenVideo}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        ) : null}
 
         {/* Header — expand opens the full editor */}
         <TouchableOpacity
@@ -265,6 +296,7 @@ export default function EnvelopeDock({
 
           <View style={styles.centerRow}>
             <TouchableOpacity
+              testID="envelope-discard"
               onPress={handleDiscard}
               style={[styles.miniBtn, { borderColor: colors.accent }]}
               accessibilityRole="button"
@@ -273,6 +305,7 @@ export default function EnvelopeDock({
               <Ionicons name="close" size={18} color={colors.accent} />
             </TouchableOpacity>
             <TouchableOpacity
+              testID="envelope-keep"
               onPress={handleKeep}
               style={[styles.miniBtn, { backgroundColor: colors.primary }]}
               accessibilityRole="button"

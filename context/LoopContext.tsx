@@ -8,7 +8,7 @@ import React, {
   useState,
 } from "react";
 import { Platform } from "react-native";
-import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
+import { setAudioModeAsync } from "expo-audio";
 import * as Haptics from "expo-haptics";
 import { File } from "expo-file-system";
 import { syntheticWaveform, type AudioAnalysis } from "@/utils/audio-analysis";
@@ -320,14 +320,12 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
   const restorePlaybackAudioMode = useCallback(async () => {
     if (Platform.OS === "web") return;
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        shouldDuckAndroid: false,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        playThroughEarpieceAndroid: false,
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
+        interruptionMode: "doNotMix",
+        shouldRouteThroughEarpiece: false,
       });
     } catch (err) {
       console.warn("[audio] restore playback mode failed:", err);
@@ -650,7 +648,12 @@ export function LoopProvider({ children }: { children: React.ReactNode }) {
         revokeBlobURI(l.videoUri);
         revokeBlobURI(l.fullRecordingUri);
       }
-      if (pendingLoopRef.current) revokeBlobURI(pendingLoopRef.current.uri);
+      if (pendingLoopRef.current) {
+        revokeBlobURI(pendingLoopRef.current.uri);
+        if (pendingLoopRef.current.fullRecordingUri && pendingLoopRef.current.fullRecordingUri !== pendingLoopRef.current.uri) {
+          revokeBlobURI(pendingLoopRef.current.fullRecordingUri);
+        }
+      }
       const live = filterLiveLoops(session.loops);
       if (live.length === 0) return false;
       const normalized = live.map((l, i) => ({ ...l, layerIndex: i }));

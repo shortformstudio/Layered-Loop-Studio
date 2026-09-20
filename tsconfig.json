@@ -3,6 +3,7 @@
   "compilerOptions": {
     "incremental": true,
     "tsBuildInfoFile": ".tsbuildinfo",
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "strict": true,
     "paths": {

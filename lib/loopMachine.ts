@@ -93,7 +93,7 @@ function canArm(s: MachineState): boolean {
 }
 
 function canStartRecording(s: MachineState): boolean {
-  return s.phase === "armed";
+  return s.phase === "armed" || (s.phase === "idle" && s.loops.length === 0);
 }
 
 function canStopRecording(s: MachineState): boolean {
@@ -325,6 +325,9 @@ export function reduceLoopIntent(
       }
       if (s.pendingLoop) {
         effects.push({ type: "REVOKE_BLOB", uri: s.pendingLoop.uri });
+        if (s.pendingLoop.fullRecordingUri && s.pendingLoop.fullRecordingUri !== s.pendingLoop.uri) {
+          effects.push({ type: "REVOKE_BLOB", uri: s.pendingLoop.fullRecordingUri });
+        }
       }
       s.pendingLoop = null;
       s.phase = s.loops.length > 0 ? "playing" : "idle";
@@ -426,6 +429,9 @@ export function reduceLoopIntent(
       }
       if (s.pendingLoop) {
         effects.push({ type: "REVOKE_BLOB", uri: s.pendingLoop.uri });
+        if (s.pendingLoop.fullRecordingUri && s.pendingLoop.fullRecordingUri !== s.pendingLoop.uri) {
+          effects.push({ type: "REVOKE_BLOB", uri: s.pendingLoop.fullRecordingUri });
+        }
       }
       effects.push({ type: "STOP_CLOCK" });
       effects.push({ type: "CLEAR_DISARM_TIMER" });

@@ -7,7 +7,7 @@
  * it through expo-av. Web: Web Audio oscillator. No assets, no deps.
  */
 import { Platform } from "react-native";
-import { Audio } from "expo-av";
+import { createAudioPlayer } from "expo-audio";
 import { File, Paths } from "expo-file-system";
 
 const SAMPLE_RATE = 44100;
@@ -57,14 +57,14 @@ async function playToneNative(): Promise<void> {
   const wav = encodeWavPcm16(buildToneSamples(), SAMPLE_RATE);
   const file = new File(Paths.cache, "looplayer-monitor-test.wav");
   file.write(new Uint8Array(wav));
-  const { sound } = await Audio.Sound.createAsync({ uri: file.uri });
-  await sound.setVolumeAsync(1.0);
-  await sound.playAsync();
-  sound.setOnPlaybackStatusUpdate((status) => {
-    if (status.isLoaded && status.didJustFinish) {
-      sound.unloadAsync().catch(() => {});
-    }
-  });
+  const player = createAudioPlayer(file.uri);
+  player.volume = 1.0;
+  player.play();
+  setTimeout(() => {
+    try {
+      player.remove();
+    } catch {}
+  }, Math.round((TONE_SECONDS + 0.5) * 1000));
 }
 
 async function playToneWeb(): Promise<void> {

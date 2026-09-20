@@ -19,7 +19,7 @@ import Animated, {
   withSequence,
 } from "react-native-reanimated";
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
-import { Audio, AudioMode, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import { setAudioModeAsync, type AudioMode } from "expo-audio";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystemLegacy from "expo-file-system/legacy";
 import { Ionicons } from "@expo/vector-icons";
@@ -193,10 +193,10 @@ export default function CameraScreen() {
    *  crash on iOS. Every caller goes through this chain. */
   const audioModeChain = useRef<Promise<void>>(Promise.resolve());
 
-  const queueAudioMode = useCallback((mode: AudioMode) => {
+  const queueAudioMode = useCallback((mode: Partial<AudioMode>) => {
     const next = audioModeChain.current
       .catch(() => {})
-      .then(() => Audio.setAudioModeAsync(mode).catch(() => {}));
+      .then(() => setAudioModeAsync(mode).catch(() => {}));
     audioModeChain.current = next;
     return next;
   }, []);
@@ -286,17 +286,11 @@ export default function CameraScreen() {
   // never races CameraView's capture-session startup (native crash on iOS).
   const applyAudioMode = useCallback(() => {
     queueAudioMode({
-      allowsRecordingIOS: audioRecordMode.current,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      interruptionModeIOS: monitorOn
-        ? InterruptionModeIOS.DoNotMix
-        : InterruptionModeIOS.DuckOthers,
-      shouldDuckAndroid: !monitorOn,
-      interruptionModeAndroid: monitorOn
-        ? InterruptionModeAndroid.DoNotMix
-        : InterruptionModeAndroid.DuckOthers,
-      playThroughEarpieceAndroid: monitorRoute === "earpiece",
+      allowsRecording: audioRecordMode.current,
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+      interruptionMode: monitorOn ? "doNotMix" : "duckOthers",
+      shouldRouteThroughEarpiece: monitorRoute === "earpiece",
     });
   }, [monitorOn, monitorRoute, queueAudioMode]);
 
@@ -419,13 +413,11 @@ export default function CameraScreen() {
       // drift-corrects every layer right after the switch settles.
       if (!audioRecordMode.current) {
         await queueAudioMode({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          shouldDuckAndroid: false,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          playThroughEarpieceAndroid: monitorRoute === "earpiece",
+          allowsRecording: true,
+          playsInSilentMode: true,
+          shouldPlayInBackground: false,
+          interruptionMode: "doNotMix",
+          shouldRouteThroughEarpiece: monitorRoute === "earpiece",
         });
         audioRecordMode.current = true;
       }
@@ -738,7 +730,6 @@ export default function CameraScreen() {
           <VideoStack
             loops={loops}
             isPlaying={loopsPlaying}
-            masterDuration={masterDuration}
             volume={monitorVolume}
             soloedId={soloedId}
           />
@@ -1117,6 +1108,7 @@ export default function CameraScreen() {
           <View style={styles.sideCell}>
             {!isRecording && !isArmed && loops.length > 0 && (
               <TouchableOpacity
+                testID="transport-toggle"
                 onPress={toggleGlobalPlayback}
                 style={[styles.iconBtn, { borderColor: colors.border }]}
                 accessibilityRole="button"
@@ -1132,6 +1124,7 @@ export default function CameraScreen() {
             layers remain; saves the composition once the stack is full. */}
         {!isTrimming && !isBrowsing && !isArmed && !isRecording && loops.length > 0 && (
           <TouchableOpacity
+            testID="next-layer-btn"
             onPress={() => {
               if (isFinalized) return;
               if (loops.length >= maxLoops) {
@@ -1305,7 +1298,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: NAVY_BG },
 
   cameraStage: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

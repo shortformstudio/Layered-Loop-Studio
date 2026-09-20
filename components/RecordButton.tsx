@@ -109,6 +109,7 @@ export default function RecordButton({ isRecording, isArmed, beatFlashKey = 0, o
 
   return (
     <TouchableOpacity
+      testID="record-button"
       onPress={handlePress}
       disabled={disabled}
       activeOpacity={0.9}

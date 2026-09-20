@@ -13,7 +13,8 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
-import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
+import { createVideoPlayer, VideoView } from "expo-video";
+import type { VideoPlayer } from "expo-video";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -62,7 +63,8 @@ export default function TrimEditor({
   const colors = useColors();
   const { width: screenW } = useWindowDimensions();
   const waveW = screenW - PAD * 2;
-  const videoRef = useRef<Video>(null);
+  const playerRef = useRef<VideoPlayer | null>(null);
+  const [isReady, setIsReady] = useState(false);
   // Auto-plays on mount — the take starts looping its frame the moment
   // recording stops; the trim handles reshape it live.
   const [isPlaying, setIsPlaying] = useState(true);
@@ -77,9 +79,9 @@ export default function TrimEditor({
 
   // Red playhead — sweeps across the waveform wherever the preview plays.
   const playheadX = useSharedValue(0);
-  // Wrap seeks on a just-recorded file are expensive when frame-exact —
-  // loose tolerance + a cooldown keep the wrap snappy instead of stalling
-  // the preview at the loop start.
+  const playheadStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: playheadX.value }],
+  }));
   const seekCooldownRef = useRef(0);
 
   // Snap config lives in refs so the PanResponders (created once) never
@@ -111,48 +113,63 @@ export default function TrimEditor({
     return markers;
   }, [beatMs, safeDur]);
 
-  const handleStatus = useCallback(async (status: AVPlaybackStatus) => {
-    if (!status.isLoaded) return;
-    playheadX.value = withTiming(
-      (status.positionMillis / Math.max(1, safeDur)) * waveW,
-      { duration: 120 }
+  useEffect(() => {
+    const p = createVideoPlayer({ uri });
+    p.loop = false;
+    p.muted = false;
+    p.volume = 1;
+    p.timeUpdateEventInterval = 0.05;
+    const pc = p as unknown as {
+      addListener: (
+        ev: string,
+        cb: (data: { isPlaying?: boolean; currentTime?: number }) => void,
+      ) => { remove: () => void };
+    };
+    const subs: { remove: () => void }[] = [];
+    subs.push(
+      pc.addListener("playingChange", (d) => {
+        if (typeof d.isPlaying === "boolean") setIsPlaying(d.isPlaying);
+      }),
     );
-    if (seekingRef.current) return;
-    if (Date.now() - seekCooldownRef.current < 300) return;
-    const startEdge = startRef.current * safeDur;
-    const endEdge = endRef.current * safeDur;
-    // Wrap at the end; recover only when well outside the loop bounds
-    // (threshold wider than the seek tolerance so a slightly-short wrap
-    // landing can't re-trigger recovery in a loop).
-    if (status.positionMillis >= endEdge - 80 || status.positionMillis < startEdge - 300) {
-      seekingRef.current = true;
-      try {
-        await videoRef.current?.setPositionAsync(startEdge, {
-          toleranceMillisBefore: 120,
-          toleranceMillisAfter: 120,
-        });
-        playheadX.value = (startEdge / Math.max(1, safeDur)) * waveW;
-        if (!status.isPlaying) {
-          await videoRef.current?.playAsync();
-        }
-        seekCooldownRef.current = Date.now();
-      } catch {
-        /* seek raced a load/unload — the next status update re-anchors */
-      } finally {
-        seekingRef.current = false;
-      }
-    }
-  }, [safeDur, waveW]);
+    subs.push(
+      pc.addListener("timeUpdate", (d) => {
+        const curSec = d.currentTime ?? 0;
+        const curMs = curSec * 1000;
+        playheadX.value = (curMs / Math.max(1, safeDur)) * waveW;
 
-  const playheadStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: playheadX.value }],
-  }));
+        if (seekingRef.current) return;
+        if (Date.now() - seekCooldownRef.current < 250) return;
+        const startEdge = startRef.current * safeDur;
+        const endEdge = endRef.current * safeDur;
+        if (curMs >= endEdge - 80 || curMs < startEdge - 300) {
+          seekingRef.current = true;
+          p.currentTime = startEdge / 1000;
+          if (!p.playing) p.play();
+          seekCooldownRef.current = Date.now();
+          seekingRef.current = false;
+        }
+      }),
+    );
+    playerRef.current = p;
+    setIsReady(true);
+    p.play();
+    setIsPlaying(true);
+    return () => {
+      subs.forEach((s) => {
+        try { s.remove(); } catch {}
+      });
+      try { p.pause(); p.release(); } catch {}
+      playerRef.current = null;
+    };
+  }, [uri, safeDur, waveW]);
 
   const togglePlay = async () => {
+    const p = playerRef.current;
+    if (!p) return;
     if (!isPlaying) {
       try {
-        await videoRef.current?.setPositionAsync(startRatio * safeDur);
-        await videoRef.current?.playAsync();
+        p.currentTime = (startRef.current * safeDur) / 1000;
+        p.play();
         setIsPlaying(true);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       } catch {
@@ -160,11 +177,9 @@ export default function TrimEditor({
       }
     } else {
       try {
-        await videoRef.current?.pauseAsync();
+        p.pause();
         setIsPlaying(false);
-      } catch {
-        /* already paused */
-      }
+      } catch {}
     }
   };
 
@@ -257,19 +272,14 @@ export default function TrimEditor({
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Video preview */}
       <View style={[styles.video, { height: screenW * 0.52 }]}>
-        <Video
-          ref={videoRef}
-          source={{ uri }}
-          style={StyleSheet.absoluteFill}
-          resizeMode={ResizeMode.COVER}
-          shouldPlay={isPlaying}
-          isLooping={false}
-          isMuted={false}
-          onPlaybackStatusUpdate={handleStatus}
-          useNativeControls={false}
-          progressUpdateIntervalMillis={100}
-          onError={() => setVideoError(true)}
-        />
+        {isReady && playerRef.current ? (
+          <VideoView
+            player={playerRef.current}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        ) : null}
         {videoError && (
           <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000", alignItems: "center", justifyContent: "center" }]}>
             <Ionicons name="warning-outline" size={28} color={colors.accent} />
@@ -324,6 +334,7 @@ export default function TrimEditor({
             {/* Start handle */}
             <View
               {...startPan.panHandlers}
+              testID="trim-start-handle"
               style={[styles.handle, { left: startLeft, backgroundColor: colors.primary }]}
               accessible
               accessibilityRole="adjustable"
@@ -335,6 +346,7 @@ export default function TrimEditor({
             {/* End handle */}
             <View
               {...endPan.panHandlers}
+              testID="trim-end-handle"
               style={[styles.handle, { left: endLeft, backgroundColor: colors.primary }]}
               accessible
               accessibilityRole="adjustable"
@@ -368,6 +380,7 @@ export default function TrimEditor({
         {/* Actions — the sheet header ✕ discards; confirm sets the loop */}
         <View style={styles.actions}>
           <TouchableOpacity
+            testID="trim-confirm"
             onPress={handleConfirm}
             style={[styles.btnPri, { backgroundColor: colors.primary }]}
             accessibilityRole="button"

@@ -323,6 +323,7 @@ function TrackRow({
       </TouchableOpacity>
 
       <TouchableOpacity
+        testID={`delete-layer-${loop.layerIndex + 1}`}
         onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           onRemove(loop.id);

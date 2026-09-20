@@ -35,6 +35,8 @@ export class WebRecorder {
   private stopRequested = false;
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private levelCtx: AudioContext | null = null;
+  private visibilityListener: (() => void) | null = null;
+  private createdUris = new Set<string>();
   /** Single-flight guard — prevents concurrent start() calls. (G19) */
   private starting = false;
   /** Live amplitude callback (0..1) — fired ~10x/sec while recording. */
@@ -48,6 +50,17 @@ export class WebRecorder {
     try {
       const ctx: AudioContext = new Ctor();
       this.levelCtx = ctx;
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+      if (typeof document !== "undefined") {
+        this.visibilityListener = () => {
+          if (document.visibilityState === "visible" && this.levelCtx && this.levelCtx.state === "suspended") {
+            this.levelCtx.resume().catch(() => {});
+          }
+        };
+        document.addEventListener("visibilitychange", this.visibilityListener);
+      }
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
@@ -68,6 +81,10 @@ export class WebRecorder {
   }
 
   private stopLevelProbe(): void {
+    if (this.visibilityListener && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.visibilityListener);
+      this.visibilityListener = null;
+    }
     if (this.levelTimer) {
       clearInterval(this.levelTimer);
       this.levelTimer = null;
@@ -142,6 +159,7 @@ export class WebRecorder {
 
         this.mediaRecorder.onstop = () => {
           const uri = URL.createObjectURL(new Blob(this.chunks, { type: mimeType }));
+          this.createdUris.add(uri);
           const settledResolve = this.pendingResolve;
           this.pendingResolve = null;
           this.starting = false;
@@ -150,7 +168,7 @@ export class WebRecorder {
             this.recordedUri = uri;
             settledResolve({ uri });
           } else {
-            URL.revokeObjectURL(uri);
+            this.revokeUri(uri);
           }
         };
 
@@ -220,11 +238,32 @@ export class WebRecorder {
     settledReject?.(new Error("Recording stopped."));
   }
 
+  revokeUri(uri: string): void {
+    if (this.createdUris.has(uri)) {
+      try {
+        URL.revokeObjectURL(uri);
+      } catch {}
+      this.createdUris.delete(uri);
+      if (this.recordedUri === uri) {
+        this.recordedUri = null;
+      }
+    }
+  }
+
   revokeLastUri(): void {
     if (this.recordedUri) {
-      URL.revokeObjectURL(this.recordedUri);
-      this.recordedUri = null;
+      this.revokeUri(this.recordedUri);
     }
+  }
+
+  revokeAllUris(): void {
+    for (const u of this.createdUris) {
+      try {
+        URL.revokeObjectURL(u);
+      } catch {}
+    }
+    this.createdUris.clear();
+    this.recordedUri = null;
   }
 
   private cleanup(): void {
